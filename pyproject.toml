@@ -8,6 +8,7 @@ dependencies = [
     "jupyter>=1.1.1",
     "matplotlib>=3.10.9",
     "nibabel>=5.4.2",
+    "nilearn>=0.11.1",
     "numpy>=2.4.5",
     "pandas>=3.0.3",
     "seaborn>=0.13.2",
