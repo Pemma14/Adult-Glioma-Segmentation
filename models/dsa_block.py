@@ -5,12 +5,11 @@ from typing import Union, Sequence, Optional
 from monai.networks.blocks.convolutions import Convolution
 from monai.networks.layers.factories import Conv
 
-from dconv_native import deform_conv3d
+from mmcv.ops import deform_conv3d
 
 class DeformableConvV3D(nn.Module):
     """
-    3D Deformable Convolution V2.
-    Strict implementation: requires dconv_native library.
+    3D Deformable Convolution V2 implementation using mmcv.
     """
     def __init__(
         self,
