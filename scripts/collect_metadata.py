@@ -1,4 +1,3 @@
-import os
 import json
 import nibabel as nib
 import csv
@@ -33,7 +32,7 @@ def collect_metadata():
         for case in training_cases:
             img_rel_path = case['image'].lstrip('./')
             img_path = ds_path / img_rel_path
-            pid = os.path.basename(img_rel_path).replace('.nii.gz', '')
+            pid = Path(img_rel_path).name.replace('.nii.gz', '')
             
             try:
                 img = nib.load(img_path)

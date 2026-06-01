@@ -1,4 +1,4 @@
-import os
+from pathlib import Path
 import nibabel as nib
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor
@@ -22,14 +22,15 @@ def check_nifti_file(filepath):
 
 
 def main():
-    base_dirs = ['data/raw/MSD_BrainTumour', 'data/raw/UPENN-GBM']
+    base_dirs = [Path('data/raw/MSD_BrainTumour'), Path('data/raw/UPENN-GBM')]
     nifti_files = []
 
     for base in base_dirs:
-        for root, _, files in os.walk(base):
-            for f in files:
-                if f.endswith('.nii.gz'):
-                    nifti_files.append(os.path.join(root, f))
+        if not base.exists():
+            print(f"Warning: {base} does not exist.")
+            continue
+        for f in base.rglob('*.nii.gz'):
+            nifti_files.append(str(f))
 
     print(f"Checking {len(nifti_files)} files for loadability...")
 

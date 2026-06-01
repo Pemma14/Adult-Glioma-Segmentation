@@ -1,8 +1,9 @@
-import os
+from pathlib import Path
 import sys
 
 # Добавляем корень проекта в путь для импорта моделей
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ROOT_DIR = Path(__file__).resolve().parents[1]
+sys.path.append(str(ROOT_DIR))
 
 import torch
 import torch.nn as nn
@@ -56,7 +57,7 @@ CONFIG = {
 task.connect(CONFIG)
 
 def load_pretrained_weights(model, model_name, path):
-    if not os.path.exists(path):
+    if not Path(path).exists():
         print(f"Pretrained weights not found at {path}. Skipping.")
         return model
     

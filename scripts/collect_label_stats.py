@@ -1,4 +1,3 @@
-import os
 import json
 import nibabel as nib
 import pandas as pd
