@@ -1,4 +1,3 @@
-import os
 import json
 import nibabel as nib
 import numpy as np
@@ -24,7 +23,7 @@ def verify_dataset(dataset_name):
     for case in training_cases:
         img_path = proc_dir / case['image'].lstrip('./')
         lbl_path = proc_dir / case['label'].lstrip('./')
-        pid = os.path.basename(img_path).replace('.nii.gz', '')
+        pid = img_path.name.replace('.nii.gz', '')
 
         if not img_path.exists():
             errors.append(f"{pid}: Missing image file: {img_path}")

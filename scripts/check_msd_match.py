@@ -1,15 +1,16 @@
-import os
+from pathlib import Path
 
 def check_msd_folders(base_dir):
-    images_dir = os.path.join(base_dir, 'imagesTr')
-    labels_dir = os.path.join(base_dir, 'labelsTr')
+    base_path = Path(base_dir)
+    images_dir = base_path / 'imagesTr'
+    labels_dir = base_path / 'labelsTr'
     
-    if not os.path.exists(images_dir) or not os.path.exists(labels_dir):
+    if not images_dir.exists() or not labels_dir.exists():
         print(f"Error: imagesTr or labelsTr not found in {base_dir}")
         return
 
-    images = set(f for f in os.listdir(images_dir) if f.endswith('.nii.gz'))
-    labels = set(f for f in os.listdir(labels_dir) if f.endswith('.nii.gz'))
+    images = set(f.name for f in images_dir.glob('*.nii.gz'))
+    labels = set(f.name for f in labels_dir.glob('*.nii.gz'))
     
     only_images = images - labels
     only_labels = labels - images

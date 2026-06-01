@@ -1,4 +1,3 @@
-import os
 import json
 import nibabel as nib
 import numpy as np
@@ -21,7 +20,7 @@ def prepare_upenn_dataset():
     # Модальности в порядке, соответствующем MSD
     modalities = ['FLAIR', 'T1', 'T1GD', 'T2']
 
-    patient_files = [f for f in os.listdir(segm_dir) if f.endswith('_segm.nii.gz')]
+    patient_files = [f.name for f in segm_dir.glob('*_segm.nii.gz')]
 
     dataset_info = {
         "name": "UPENN-GBM-4D",
