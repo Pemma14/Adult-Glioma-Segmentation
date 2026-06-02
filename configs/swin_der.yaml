@@ -1,0 +1,4 @@
+model_name: "swin_der"
+feature_size: 48
+pretrained_path: "./pretrained/model_swinvit.pt"
+deep_supervision: true
