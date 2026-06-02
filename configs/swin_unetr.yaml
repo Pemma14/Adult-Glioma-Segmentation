@@ -1,0 +1,3 @@
+model_name: "swin_unetr"
+feature_size: 48
+pretrained_path: "./pretrained/model_swinvit.pt"
