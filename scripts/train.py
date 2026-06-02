@@ -1,5 +1,11 @@
 from pathlib import Path
 import sys
+import argparse
+import yaml
+import logging
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger_log = logging.getLogger(__name__)
 
 # Добавляем корень проекта в путь для импорта моделей
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -23,6 +29,9 @@ from monai.transforms import (
     MapTransform,
     ToTensord,
     NormalizeIntensityd,
+    EnsureChannelFirstd,
+    ScaleIntensityRangePercentiled,
+    SpatialPadd,
 )
 from monai.networks.nets import SwinUNETR
 from monai.losses import DiceLoss, DiceCELoss
@@ -33,35 +42,86 @@ from monai.metrics import DiceMetric
 from clearml import Task, Logger
 from models import get_model
 
-# Настройка ClearML
-task = Task.init(project_name='AdultGliomaSegmentation', task_name='Model_Comparison')
-logger = Logger.current_logger()
+def load_config(config_path, base_config_path="configs/base.yaml"):
+    with open(base_config_path, "r") as f:
+        config = yaml.safe_load(f)
+    
+    if config_path:
+        with open(config_path, "r") as f:
+            specific_config = yaml.safe_load(f)
+            if specific_config:
+                config.update(specific_config)
+    
+    return config
 
-CONFIG = {
-    "model_name": "swin_unetr",  # unet3d, swin_unetr, swin_der
-    "data_dir": "./data/BraTS2021",
-    "img_size": (128, 128, 128),
-    "in_channels": 4,
-    "out_channels": 3,  # BraTS classes: WT, TC, ET (обычно)
-    "feature_size": 48,
-    "batch_size": 1,
-    "max_epochs": 100,
-    "lr": 1e-4,
-    "weight_decay": 1e-5,
-    "val_interval": 5,
-    "transfer_learning": True,
-    "pretrained_path": "./pretrained/model_swinvit.pt",
-    "deep_supervision": True,
-}
+def get_transforms(config):
+    train_transforms = Compose([
+        LoadImaged(keys=["image", "label"]),
+        EnsureChannelFirstd(keys=["image", "label"]),
+        Spacingd(
+            keys=["image", "label"],
+            pixdim=(1.0, 1.0, 1.0),
+            mode=("bilinear", "nearest"),
+        ),
+        Orientationd(keys=["image", "label"], axcodes="RAS"),
+        CropForegroundd(keys=["image", "label"], source_key="image"),
+        ScaleIntensityRangePercentiled(
+            keys="image",
+            lower=0.5,
+            upper=99.5,
+            b_min=0.0,
+            b_max=1.0,
+            clip=True,
+            channel_wise=True,
+        ),
+        NormalizeIntensityd(keys="image", nonzero=True, channel_wise=True),
+        SpatialPadd(keys=["image", "label"], spatial_size=config["img_size"]),
+        RandCropByPosNegLabeld(
+            keys=["image", "label"],
+            label_key="label",
+            spatial_size=config["img_size"],
+            pos=1,
+            neg=1,
+            num_samples=4,
+        ),
+        RandFlipd(keys=["image", "label"], prob=0.5, spatial_axis=0),
+        RandFlipd(keys=["image", "label"], prob=0.5, spatial_axis=1),
+        RandFlipd(keys=["image", "label"], prob=0.5, spatial_axis=2),
+        RandRotate90d(keys=["image", "label"], prob=0.5, max_k=3),
+        ToTensord(keys=["image", "label"]),
+    ])
 
-task.connect(CONFIG)
+    val_transforms = Compose([
+        LoadImaged(keys=["image", "label"]),
+        EnsureChannelFirstd(keys=["image", "label"]),
+        Spacingd(
+            keys=["image", "label"],
+            pixdim=(1.0, 1.0, 1.0),
+            mode=("bilinear", "nearest"),
+        ),
+        Orientationd(keys=["image", "label"], axcodes="RAS"),
+        CropForegroundd(keys=["image", "label"], source_key="image"),
+        ScaleIntensityRangePercentiled(
+            keys="image",
+            lower=0.5,
+            upper=99.5,
+            b_min=0.0,
+            b_max=1.0,
+            clip=True,
+            channel_wise=True,
+        ),
+        NormalizeIntensityd(keys="image", nonzero=True, channel_wise=True),
+        SpatialPadd(keys=["image", "label"], spatial_size=config["img_size"]),
+        ToTensord(keys=["image", "label"]),
+    ])
+    return train_transforms, val_transforms
 
 def load_pretrained_weights(model, model_name, path):
     if not Path(path).exists():
-        print(f"Pretrained weights not found at {path}. Skipping.")
+        logger_log.warning(f"Pretrained weights not found at {path}. Skipping.")
         return model
     
-    print(f"Loading pretrained weights for {model_name} from {path}")
+    logger_log.info(f"Loading pretrained weights for {model_name} from {path}")
     checkpoint = torch.load(path, map_location="cpu")
     
     if "state_dict" in checkpoint:
@@ -77,31 +137,7 @@ def load_pretrained_weights(model, model_name, path):
     
     return model
 
-# --- Transforms ---
-# (Упрощенно для примера, в реальности BraTS требует специфической склейки классов)
-train_transforms = Compose([
-    LoadImaged(keys=["image", "label"]),
-    NormalizeIntensityd(keys="image", nonzero=True, channel_wise=True),
-    RandCropByPosNegLabeld(
-        keys=["image", "label"],
-        label_key="label",
-        spatial_size=CONFIG["img_size"],
-        pos=1,
-        neg=1,
-        num_samples=4,
-    ),
-    RandFlipd(keys=["image", "label"], prob=0.5, spatial_axis=0),
-    RandFlipd(keys=["image", "label"], prob=0.5, spatial_axis=1),
-    RandFlipd(keys=["image", "label"], prob=0.5, spatial_axis=2),
-    RandRotate90d(keys=["image", "label"], prob=0.5, max_k=3),
-    ToTensord(keys=["image", "label"]),
-])
-
-val_transforms = Compose([
-    LoadImaged(keys=["image", "label"]),
-    NormalizeIntensityd(keys="image", nonzero=True, channel_wise=True),
-    ToTensord(keys=["image", "label"]),
-])
+# --- Transforms moved to get_transforms() ---
 
 class DeepSupervisionLoss(nn.Module):
     def __init__(self, base_loss):
@@ -122,35 +158,39 @@ class DeepSupervisionLoss(nn.Module):
             return total_loss
         return self.base_loss(outputs, target)
 
-def train():
+def train(config):
     device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
+    logger = Logger.current_logger()
     
-    # 1. Модель
-    model = get_model(CONFIG["model_name"], CONFIG).to(device)
+    # 1. Transforms
+    train_transforms, val_transforms = get_transforms(config)
     
-    # 2. Transfer Learning
-    if CONFIG["transfer_learning"] and CONFIG["model_name"] in ["swin_unetr", "swin_der"]:
-        model = load_pretrained_weights(model, CONFIG["model_name"], CONFIG["pretrained_path"])
+    # 2. Модель
+    model = get_model(config["model_name"], config).to(device)
     
-    # 3. Loss & Optimizer
+    # 3. Transfer Learning
+    if config["transfer_learning"] and config["model_name"] in ["swin_unetr", "swin_der"]:
+        model = load_pretrained_weights(model, config["model_name"], config["pretrained_path"])
+    
+    # 4. Loss & Optimizer
     dice_ce_loss = DiceCELoss(to_onehot_y=False, sigmoid=True) # BraTS labels are often multi-label
-    if CONFIG["model_name"] == "swin_der" and CONFIG["deep_supervision"]:
+    if config["model_name"] == "swin_der" and config.get("deep_supervision"):
         loss_function = DeepSupervisionLoss(dice_ce_loss)
     else:
         loss_function = dice_ce_loss
         
-    optimizer = torch.optim.AdamW(model.parameters(), lr=CONFIG["lr"], weight_decay=CONFIG["weight_decay"])
+    optimizer = torch.optim.AdamW(model.parameters(), lr=float(config["lr"]), weight_decay=float(config["weight_decay"]))
     
-    # 4. Data (Mock for structure)
+    # 5. Data (Mock for structure)
     # train_ds = Dataset(data=train_files, transform=train_transforms)
     # val_ds = Dataset(data=val_files, transform=val_transforms)
-    # train_loader = DataLoader(train_ds, batch_size=CONFIG["batch_size"], shuffle=True)
+    # train_loader = DataLoader(train_ds, batch_size=config["batch_size"], shuffle=True)
     # val_loader = DataLoader(val_ds, batch_size=1)
 
     dice_metric = DiceMetric(include_background=True, reduction="mean")
     
     best_dice = 0
-    for epoch in range(CONFIG["max_epochs"]):
+    for epoch in range(config["max_epochs"]):
         model.train()
         epoch_loss = 0
         # for batch_data in train_loader:
@@ -163,9 +203,9 @@ def train():
         #     epoch_loss += loss.item()
         
         # logger.report_scalar("Loss", "train", iteration=epoch, value=epoch_loss)
-        print(f"Epoch {epoch} completed.")
+        logger_log.info(f"Epoch {epoch} completed.")
 
-        if (epoch + 1) % CONFIG["val_interval"] == 0:
+        if (epoch + 1) % config["val_interval"] == 0:
             model.eval()
             with torch.no_grad():
                 # val_dice logic...
@@ -174,8 +214,25 @@ def train():
                 
                 if val_dice > best_dice:
                     best_dice = val_dice
-                    torch.save(model.state_dict(), "best_model.pth")
-                    task.update_output_model("best_model.pth", name=f"best_{CONFIG['model_name']}")
+                    save_path = f"best_model_{config['model_name']}.pth"
+                    torch.save(model.state_dict(), save_path)
+                    Task.current_task().update_output_model(save_path, name=f"best_{config['model_name']}")
 
 if __name__ == "__main__":
-    train()
+    parser = argparse.ArgumentParser(description="Train Adult Glioma Segmentation Model")
+    parser.add_argument("--config", type=str, default="configs/swin_unetr.yaml", help="Path to the specific config file")
+    parser.add_argument("--base_config", type=str, default="configs/base.yaml", help="Path to the base config file")
+    args = parser.parse_args()
+
+    # Загружаем конфигурацию
+    config = load_config(args.config, args.base_config)
+
+    # Настройка ClearML
+    task = Task.init(
+        project_name='AdultGliomaSegmentation', 
+        task_name=f'Train_{config["model_name"]}',
+        task_type=Task.TaskTypes.training
+    )
+    task.connect(config)
+
+    train(config)
