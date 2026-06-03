@@ -1,0 +1,5 @@
+outs:
+- md5: c8d9deb6cbbd66839bc8dced6010103f
+  size: 411162269
+  hash: md5
+  path: model_swinvit.pt
