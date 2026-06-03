@@ -1,4 +1,5 @@
 import shutil
+import json
 from pathlib import Path
 
 def import_msd():
@@ -11,9 +12,20 @@ def import_msd():
 
     proc_dir.mkdir(parents=True, exist_ok=True)
     
-    # Copy dataset.json
-    print(f"Copying dataset.json...")
-    shutil.copy2(raw_dir / 'dataset.json', proc_dir / 'dataset.json')
+    # Copy and fix dataset.json
+    print(f"Processing dataset.json...")
+    with open(raw_dir / 'dataset.json', 'r') as f:
+        data = json.load(f)
+    
+    # Unify labels (tumor -> tumour)
+    if "labels" in data:
+        new_labels = {}
+        for k, v in data["labels"].items():
+            new_labels[k] = v.replace("tumor", "tumour")
+        data["labels"] = new_labels
+    
+    with open(proc_dir / 'dataset.json', 'w') as f:
+        json.dump(data, f, indent=4)
     
     for folder in ['imagesTr', 'labelsTr']:
         dst_folder = proc_dir / folder

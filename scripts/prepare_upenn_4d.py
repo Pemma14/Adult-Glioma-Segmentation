@@ -26,10 +26,13 @@ def prepare_upenn_dataset():
         "name": "UPENN-GBM-4D",
         "description": "UPENN-GBM dataset with 4D stacked modalities and MSD-compatible labels",
         "reference": "University of Pennsylvania Glioblastoma Cholangiocarcinoma Dataset",
+        "tensorImageSize": "4D",
         "modality": {"0": "FLAIR", "1": "T1", "2": "T1GD", "3": "T2"},
-        "labels": {"0": "background", "1": "edema", "2": "non-enhancing tumor", "3": "enhancing tumour"},
+        "labels": {"0": "background", "1": "edema", "2": "non-enhancing tumour", "3": "enhancing tumour"},
         "numTraining": len(patient_files),
-        "training": []
+        "numTest": 0,
+        "training": [],
+        "test": []
     }
 
     print(f"Processing {len(patient_files)} patients...")
@@ -66,12 +69,22 @@ def prepare_upenn_dataset():
         img_out_path = images_out / f"{pid}.nii.gz"
         lbl_out_path = labels_out / f"{pid}.nii.gz"
 
+        if img_out_path.exists() and lbl_out_path.exists():
+            # Add to dataset_info even if we skip processing
+            dataset_info["training"].append({
+                "image": f"./imagesTr/{pid}.nii.gz",
+                "label": f"./labelsTr/{pid}.nii.gz"
+            })
+            continue
+
         # Save image (using header and affine from first/last modality - they are all aligned)
         new_img = nib.Nifti1Image(stacked_data.astype(np.float32), affine, header)
+        new_img.set_data_dtype(np.float32)
         nib.save(new_img, img_out_path)
 
         # Save label (using header and affine from reoriented segm_img)
         new_lbl = nib.Nifti1Image(new_segm_data.astype(np.uint8), segm_img.affine, segm_img.header)
+        new_lbl.set_data_dtype(np.uint8)
         nib.save(new_lbl, lbl_out_path)
 
         dataset_info["training"].append({
