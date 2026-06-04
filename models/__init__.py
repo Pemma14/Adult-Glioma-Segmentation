@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from .swin_unetr import SwinUNETR
-from .swin_der_3D import SwinDER3D
+from .swin_der import SwinDER3D
 from .unet3d_baseline import BaselineUNet
 
 def get_model(model_name, config):
