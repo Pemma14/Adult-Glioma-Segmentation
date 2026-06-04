@@ -16,6 +16,12 @@ def collect_metadata():
     records = []
     datasets = ['MSD_BrainTumour', 'UPENN-GBM']
     
+    headers = [
+        'dataset', 'patient_id', 'image_path', 'label_path', 
+        'dim_x', 'dim_y', 'dim_z', 'channels', 
+        'spacing_x', 'spacing_y', 'spacing_z', 'flair_hash'
+    ]
+    
     print("Collecting metadata and hashes (this may take a few minutes)...")
     
     for ds in datasets:
@@ -31,6 +37,7 @@ def collect_metadata():
         training_cases = data.get('training', [])
         for case in training_cases:
             img_rel_path = case['image'].lstrip('./')
+            label_rel_path = case['label'].lstrip('./')
             img_path = ds_path / img_rel_path
             pid = Path(img_rel_path).name.replace('.nii.gz', '')
             
@@ -45,6 +52,8 @@ def collect_metadata():
                 records.append([
                     ds, 
                     pid, 
+                    img_rel_path,
+                    label_rel_path,
                     s[0], s[1], s[2], 
                     s[3] if len(s) > 3 else 1, 
                     round(float(z[0]), 2), 
@@ -58,10 +67,7 @@ def collect_metadata():
     output_csv = proc_dir / 'metadata.csv'
     with open(output_csv, 'w', newline='') as f:
         w = csv.writer(f)
-        w.writerow([
-            'dataset', 'patient_id', 'dim_x', 'dim_y', 'dim_z', 
-            'channels', 'spacing_x', 'spacing_y', 'spacing_z', 'flair_hash'
-        ])
+        w.writerow(headers)
         w.writerows(records)
         
     print(f"Metadata with hashes saved to {output_csv}")

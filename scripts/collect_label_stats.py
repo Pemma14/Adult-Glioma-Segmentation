@@ -26,7 +26,7 @@ def collect_label_stats():
         pid = row['patient_id']
         
         # Путь к маске
-        mask_path = proc_dir / ds / 'labelsTr' / f'{pid}.nii.gz'
+        mask_path = proc_dir / ds / row['label_path']
         
         if not mask_path.exists():
             print(f"Warning: Mask not found for {pid}")
