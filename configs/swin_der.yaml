@@ -1,4 +1,27 @@
 model_name: "swin_der"
+
+# Параметры обучения
+batch_size: 1
+max_epochs: 200
+lr: 0.0002
+weight_decay: 0.01
+transfer_learning: true
+
+# Параметры пайплайна / инференса
+img_size: [128, 128, 128]
+
+# Параметры архитектуры
 feature_size: 48
-pretrained_path: "./pretrained/model_swinvit.pt"
 deep_supervision: true
+use_checkpoint: false
+norm_name: "instance"
+drop_rate: 0.0
+attn_drop_rate: 0.0
+dropout_path_rate: 0.0
+depths: [2, 2, 2, 2]
+num_heads: [3, 6, 12, 24]
+normalize: true
+upsample: "onsampling"
+
+# Transfer learning
+pretrained_path: "./pretrained/model_swinvit.pt"
