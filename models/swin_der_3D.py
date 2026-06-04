@@ -13,9 +13,8 @@ class SwinDER3D(nn.Module):
     """
     def __init__(
         self,
-        img_size: tuple = (128, 128, 128),
         in_channels: int = 4,
-        out_channels: int = 4,  # background + 3 tumor classes
+        out_channels: int = 3,
         depths: tuple = (2, 2, 2, 2),
         num_heads: tuple = (3, 6, 12, 24),
         feature_size: int = 24,
@@ -113,18 +112,19 @@ class SwinDER3D(nn.Module):
         self.out = UnetOutBlock(
             spatial_dims=3, in_channels=feature_size, out_channels=out_channels
         )
-        self.out1 = UnetOutBlock(
-            spatial_dims=3, in_channels=feature_size, out_channels=out_channels
-        )
-        self.out2 = UnetOutBlock(
-            spatial_dims=3, in_channels=2 * feature_size, out_channels=out_channels
-        )
-        self.out3 = UnetOutBlock(
-            spatial_dims=3, in_channels=4 * feature_size, out_channels=out_channels
-        )
-        self.out4 = UnetOutBlock(
-            spatial_dims=3, in_channels=8 * feature_size, out_channels=out_channels
-        )
+        if self.deep_supervision:
+            self.out1 = UnetOutBlock(
+                spatial_dims=3, in_channels=feature_size, out_channels=out_channels
+            )
+            self.out2 = UnetOutBlock(
+                spatial_dims=3, in_channels=2 * feature_size, out_channels=out_channels
+            )
+            self.out3 = UnetOutBlock(
+                spatial_dims=3, in_channels=4 * feature_size, out_channels=out_channels
+            )
+            self.out4 = UnetOutBlock(
+                spatial_dims=3, in_channels=8 * feature_size, out_channels=out_channels
+            )
 
     def forward(self, x_in):
         # --- Энкодер ---
@@ -149,14 +149,12 @@ class SwinDER3D(nn.Module):
 
         # --- Сегментационные головки (deep supervision) ---
         output0 = self.out(out)      # полное разрешение
-        output1 = self.out1(dec0)    # /2
-        output2 = self.out2(dec1)    # /4
-        output3 = self.out3(dec2)    # /8
-        output4 = self.out4(dec3)    # /16
-
-        logits = [output0, output1, output2, output3, output4]
 
         if self.deep_supervision:
-            return logits
-        else:
-            return logits[0]
+            output1 = self.out1(dec0)    # /2
+            output2 = self.out2(dec1)    # /4
+            output3 = self.out3(dec2)    # /8
+            output4 = self.out4(dec3)    # /16
+            return [output0, output1, output2, output3, output4]
+
+        return output0
