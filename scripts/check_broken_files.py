@@ -1,7 +1,10 @@
+import logging
 from pathlib import Path
 import nibabel as nib
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor
+
+logger = logging.getLogger(__name__)
 
 
 def check_nifti_file(filepath):
@@ -27,12 +30,12 @@ def main():
 
     for base in base_dirs:
         if not base.exists():
-            print(f"Warning: {base} does not exist.")
+            logger.warning(f"{base} does not exist.")
             continue
         for f in base.rglob('*.nii.gz'):
             nifti_files.append(str(f))
 
-    print(f"Checking {len(nifti_files)} files for loadability...")
+    logger.info(f"Checking {len(nifti_files)} files for loadability...")
 
     broken = []
     with ThreadPoolExecutor(max_workers=8) as executor:
@@ -40,14 +43,15 @@ def main():
 
     for path, success, error in results:
         if not success:
-            print(f"Broken: {path} | Error: {error}")
+            logger.error(f"Broken: {path} | Error: {error}")
             broken.append(path)
 
     if not broken:
-        print("All files are perfectly loadable by NiBabel!")
+        logger.info("All files are perfectly loadable by NiBabel!")
     else:
-        print(f"\nSummary: Found {len(broken)} broken files.")
+        logger.info(f"Summary: Found {len(broken)} broken files.")
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
     main()
