@@ -2,7 +2,10 @@ import json
 import nibabel as nib
 import csv
 import hashlib
+import logging
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 def get_flair_hash(img_path):
     """Рассчитывает MD5-хеш для первого канала (FLAIR) изображения."""
@@ -22,13 +25,13 @@ def collect_metadata():
         'spacing_x', 'spacing_y', 'spacing_z', 'flair_hash'
     ]
     
-    print("Collecting metadata and hashes (this may take a few minutes)...")
+    logger.info("Collecting metadata and hashes (this may take a few minutes)...")
     
     for ds in datasets:
         ds_path = proc_dir / ds
         json_file = ds_path / 'dataset.json'
         if not json_file.exists():
-            print(f"Warning: dataset.json not found for {ds}")
+            logger.warning(f"dataset.json not found for {ds}")
             continue
             
         with open(json_file, 'r') as f:
@@ -62,7 +65,7 @@ def collect_metadata():
                     flair_hash
                 ])
             except Exception as e:
-                print(f"Error processing {img_path}: {e}")
+                logger.error(f"Error processing {img_path}: {e}")
                 
     output_csv = proc_dir / 'metadata.csv'
     with open(output_csv, 'w', newline='') as f:
@@ -70,7 +73,8 @@ def collect_metadata():
         w.writerow(headers)
         w.writerows(records)
         
-    print(f"Metadata with hashes saved to {output_csv}")
+    logger.info(f"Metadata with hashes saved to {output_csv}")
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
     collect_metadata()

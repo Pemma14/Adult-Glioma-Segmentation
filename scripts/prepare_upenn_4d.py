@@ -1,8 +1,10 @@
 import json
 import nibabel as nib
 import numpy as np
+import logging
 from pathlib import Path
 
+logger = logging.getLogger(__name__)
 
 def prepare_upenn_dataset():
     raw_dir = Path('data/raw/UPENN-GBM')
@@ -35,7 +37,7 @@ def prepare_upenn_dataset():
         "test": []
     }
 
-    print(f"Processing {len(patient_files)} patients...")
+    logger.info(f"Processing {len(patient_files)} patients...")
 
     for segm_file in sorted(patient_files):
         pid = segm_file.replace('_segm.nii.gz', '')
@@ -92,13 +94,14 @@ def prepare_upenn_dataset():
             "label": f"./labelsTr/{pid}.nii.gz"
         })
 
-        print(f"Done: {pid}")
+        logger.info(f"Done: {pid}")
 
     with open(proc_dir / 'dataset.json', 'w') as f:
         json.dump(dataset_info, f, indent=4)
 
-    print(f"\nSuccessfully prepared {len(patient_files)} cases in {proc_dir}")
+    logger.info(f"Successfully prepared {len(patient_files)} cases in {proc_dir}")
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
     prepare_upenn_dataset()

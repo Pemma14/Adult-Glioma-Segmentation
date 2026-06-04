@@ -3,20 +3,23 @@ import nibabel as nib
 import numpy as np
 from pathlib import Path
 import sys
+import logging
+
+logger = logging.getLogger(__name__)
 
 def verify_dataset(dataset_name):
     proc_dir = Path('data/processed') / dataset_name
     json_path = proc_dir / 'dataset.json'
     
     if not json_path.exists():
-        print(f"Error: dataset.json not found in {proc_dir}")
+        logger.error(f"dataset.json not found in {proc_dir}")
         return False
 
     with open(json_path, 'r') as f:
         dataset_info = json.load(f)
     
     training_cases = dataset_info.get('training', [])
-    print(f"\n--- Verifying {dataset_name} ({len(training_cases)} cases) ---")
+    logger.info(f"--- Verifying {dataset_name} ({len(training_cases)} cases) ---")
 
     errors = []
     
@@ -62,17 +65,18 @@ def verify_dataset(dataset_name):
             errors.append(f"{pid}: Critical error: {str(e)}")
 
     if not errors:
-        print(f" {dataset_name} passed all checks!")
+        logger.info(f" {dataset_name} passed all checks!")
         return True
     else:
-        print(f" {dataset_name} FAILED with {len(errors)} issues:")
+        logger.error(f" {dataset_name} FAILED with {len(errors)} issues:")
         for err in errors[:10]:
-            print(f"  - {err}")
+            logger.error(f"  - {err}")
         if len(errors) > 10:
-            print(f"  ... and {len(errors) - 10} more.")
+            logger.error(f"  ... and {len(errors) - 10} more.")
         return False
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
     datasets = ['UPENN-GBM', 'MSD_BrainTumour']
     all_success = True
     for ds in datasets:
