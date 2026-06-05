@@ -13,11 +13,43 @@ from monai.transforms import (
     NormalizeIntensityd,
     EnsureChannelFirstd,
     SpatialPadd,
-    ConvertToMultiChannelBasedOnBratsClassesd,
     Rand3DElasticd,
     RandAdjustContrastd,
     RandAffined,
 )
+
+class ConvertToMultiChannelMSDd(MapTransform):
+    """
+    Трансформация для конвертации меток MSD в многоканальный формат (BraTS regions):
+    Label 1: Edema (ED)
+    Label 2: Non-enhancing tumor (NET)
+    Label 3: Enhancing tumor (ET)
+
+    Channels:
+    0: WT (Whole Tumor) = ED + NET + ET (1+2+3)
+    1: TC (Tumor Core) = NET + ET (2+3)
+    2: ET (Enhancing Tumor) = ET (3)
+    """
+    def __call__(self, data):
+        d = dict(data)
+        for key in self.keys:
+            result = []
+            # WT: ED(1) + NET(2) + ET(3)
+            result.append(
+                torch.logical_or(
+                    torch.logical_or(d[key] == 1, d[key] == 2), 
+                    d[key] == 3
+                )
+            )
+            # TC: NET(2) + ET(3)
+            result.append(
+                torch.logical_or(d[key] == 2, d[key] == 3)
+            )
+            # ET: ET(3)
+            result.append(d[key] == 3)
+            
+            d[key] = torch.stack(result, axis=0).float()
+        return d
 
 class AddMultiScaleLabelsd(MapTransform):
     """
@@ -66,7 +98,7 @@ def get_transforms(config):
             channel_wise=True,
         ),
         NormalizeIntensityd(keys="image", nonzero=True, channel_wise=True),
-        ConvertToMultiChannelBasedOnBratsClassesd(keys="label"),
+        ConvertToMultiChannelMSDd(keys="label"),
         SpatialPadd(keys=["image", "label"], spatial_size=config["img_size"]),
         #Аугментации
         RandCropByPosNegLabeld(
@@ -124,7 +156,7 @@ def get_transforms(config):
             channel_wise=True,
         ),
         NormalizeIntensityd(keys="image", nonzero=True, channel_wise=True),
-        ConvertToMultiChannelBasedOnBratsClassesd(keys="label"),
+        ConvertToMultiChannelMSDd(keys="label"),
         SpatialPadd(keys=["image", "label"], spatial_size=config["img_size"]),
         ToTensord(keys=["image", "label"]),
     ])
