@@ -1,166 +1,102 @@
 from pathlib import Path
 import sys
 import argparse
-import yaml
 import logging
-
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger_log = logging.getLogger(__name__)
-
-# Добавляем корень проекта в путь для импорта моделей
-ROOT_DIR = Path(__file__).resolve().parents[1]
-sys.path.append(str(ROOT_DIR))
+import time
+import pandas as pd
 
 import torch
 import torch.nn as nn
-from monai.utils import set_determinism
-from monai.transforms import (
-    AsDiscrete,
-    Compose,
-    CropForegroundd,
-    LoadImaged,
-    Orientationd,
-    RandFlipd,
-    RandCropByPosNegLabeld,
-    RandShiftIntensityd,
-    ScaleIntensityRanged,
-    Spacingd,
-    RandRotate90d,
-    MapTransform,
-    ToTensord,
-    NormalizeIntensityd,
-    EnsureChannelFirstd,
-    ScaleIntensityRangePercentiled,
-    SpatialPadd,
-)
-from monai.networks.nets import SwinUNETR
-from monai.losses import DiceLoss, DiceCELoss
+from monai.transforms import AsDiscrete, Activations, Compose
+from monai.losses import DiceCELoss
 from monai.inferers import sliding_window_inference
-from monai.data import DataLoader, Dataset, decollate_batch
+from monai.data import DataLoader, decollate_batch
 from monai.metrics import DiceMetric
 
 from clearml import Task, Logger
 from models import get_model
 
-def load_config(config_path, base_config_path="configs/base.yaml"):
-    with open(base_config_path, "r") as f:
-        config = yaml.safe_load(f)
+from scripts.utils.data import load_config, get_folds, get_data_dicts, get_loaders
+from scripts.utils.transforms import get_transforms
+from scripts.utils.visualization import log_validation_example
+from scripts.utils.model import load_pretrained_weights, save_checkpoint, DeepSupervisionLoss
+
+logger = logging.getLogger(__name__)
+
+# Добавляем корень проекта в путь для импорта моделей
+ROOT_DIR = Path(__file__).resolve().parents[1]
+sys.path.append(str(ROOT_DIR))
+
+
+def train_epoch(model, loader, optimizer, loss_function, device):
+    model.train()
+    epoch_loss = torch.tensor(0.0).to(device)
+    for batch_data in loader:
+        inputs = batch_data["image"].to(device, non_blocking=True)
+        
+        # Подготовка меток для Deep Supervision
+        if isinstance(loss_function, DeepSupervisionLoss) and "label_level_1" in batch_data:
+            labels = [batch_data["label"].to(device, non_blocking=True)]
+            for i in range(1, 5):
+                key = f"label_level_{i}"
+                if key in batch_data:
+                    labels.append(batch_data[key].to(device, non_blocking=True))
+        else:
+            labels = batch_data["label"].to(device, non_blocking=True)
+            
+        optimizer.zero_grad()
+        outputs = model(inputs)
+        loss = loss_function(outputs, labels)
+        loss.backward()
+        optimizer.step()
+        epoch_loss += loss.detach()
+    return epoch_loss.item() / len(loader)
+
+def validate(model, loader, device, dice_metric, config, loss_function=None):
+    model.eval()
+    val_loss = 0.0
+    first_case = None
+    with torch.no_grad():
+        for i, val_data in enumerate(loader):
+            val_inputs, val_labels = (
+                val_data["image"].to(device, non_blocking=True),
+                val_data["label"].to(device, non_blocking=True),
+            )
+            roi_size = config["img_size"]
+            sw_batch_size = 4
+            val_outputs = sliding_window_inference(val_inputs, roi_size, sw_batch_size, model)
+            
+            if loss_function is not None:
+                loss = loss_function(val_outputs, val_labels)
+                val_loss += loss.item()
+
+            if i == 0:
+                first_case = {
+                    "image": val_inputs[0].cpu(),
+                    "label": val_labels[0].cpu(),
+                    "prediction": (torch.sigmoid(val_outputs[0]) > 0.5).cpu(),
+                    "case_id": val_data.get("case_id", ["first_case"])[0]
+                }
+
+            # Применяем сигмоиду и порог для метрики
+            post_pred = Compose([Activations(sigmoid=True), AsDiscrete(threshold=0.5)])
+            val_outputs = [post_pred(i) for i in decollate_batch(val_outputs)]
+            val_labels = decollate_batch(val_labels)
+            
+            dice_metric(y_pred=val_outputs, y=val_labels)
+        
+        val_dice = dice_metric.aggregate().item()
+        val_dice_per_class = dice_metric.aggregate(reduction="mean_batch")
+        dice_metric.reset()
     
-    if config_path:
-        with open(config_path, "r") as f:
-            specific_config = yaml.safe_load(f)
-            if specific_config:
-                config.update(specific_config)
-    
-    return config
+    if loss_function is not None:
+        return val_dice, val_loss / len(loader), val_dice_per_class, first_case
+    return val_dice, None, val_dice_per_class, first_case
 
-def get_transforms(config):
-    train_transforms = Compose([
-        LoadImaged(keys=["image", "label"]),
-        EnsureChannelFirstd(keys=["image", "label"]),
-        Spacingd(
-            keys=["image", "label"],
-            pixdim=(1.0, 1.0, 1.0),
-            mode=("bilinear", "nearest"),
-        ),
-        Orientationd(keys=["image", "label"], axcodes="RAS"),
-        CropForegroundd(keys=["image", "label"], source_key="image"),
-        ScaleIntensityRangePercentiled(
-            keys="image",
-            lower=0.5,
-            upper=99.5,
-            b_min=0.0,
-            b_max=1.0,
-            clip=True,
-            channel_wise=True,
-        ),
-        NormalizeIntensityd(keys="image", nonzero=True, channel_wise=True),
-        SpatialPadd(keys=["image", "label"], spatial_size=config["img_size"]),
-        RandCropByPosNegLabeld(
-            keys=["image", "label"],
-            label_key="label",
-            spatial_size=config["img_size"],
-            pos=1,
-            neg=1,
-            num_samples=4,
-        ),
-        RandFlipd(keys=["image", "label"], prob=0.5, spatial_axis=0),
-        RandFlipd(keys=["image", "label"], prob=0.5, spatial_axis=1),
-        RandFlipd(keys=["image", "label"], prob=0.5, spatial_axis=2),
-        RandRotate90d(keys=["image", "label"], prob=0.5, max_k=3),
-        ToTensord(keys=["image", "label"]),
-    ])
 
-    val_transforms = Compose([
-        LoadImaged(keys=["image", "label"]),
-        EnsureChannelFirstd(keys=["image", "label"]),
-        Spacingd(
-            keys=["image", "label"],
-            pixdim=(1.0, 1.0, 1.0),
-            mode=("bilinear", "nearest"),
-        ),
-        Orientationd(keys=["image", "label"], axcodes="RAS"),
-        CropForegroundd(keys=["image", "label"], source_key="image"),
-        ScaleIntensityRangePercentiled(
-            keys="image",
-            lower=0.5,
-            upper=99.5,
-            b_min=0.0,
-            b_max=1.0,
-            clip=True,
-            channel_wise=True,
-        ),
-        NormalizeIntensityd(keys="image", nonzero=True, channel_wise=True),
-        SpatialPadd(keys=["image", "label"], spatial_size=config["img_size"]),
-        ToTensord(keys=["image", "label"]),
-    ])
-    return train_transforms, val_transforms
-
-def load_pretrained_weights(model, model_name, path):
-    if not Path(path).exists():
-        logger_log.warning(f"Pretrained weights not found at {path}. Skipping.")
-        return model
-    
-    logger_log.info(f"Loading pretrained weights for {model_name} from {path}")
-    checkpoint = torch.load(path, map_location="cpu")
-    
-    if "state_dict" in checkpoint:
-        state_dict = checkpoint["state_dict"]
-    else:
-        state_dict = checkpoint
-
-    if model_name == "swin_unetr":
-        model.load_state_dict(state_dict, strict=False)
-    elif model_name == "swin_der":
-        # Загружаем только в энкодер
-        model.swinViT.load_state_dict(state_dict, strict=False)
-    
-    return model
-
-# --- Transforms moved to get_transforms() ---
-
-class DeepSupervisionLoss(nn.Module):
-    def __init__(self, base_loss):
-        super().__init__()
-        self.base_loss = base_loss
-
-    def forward(self, outputs, target):
-        if isinstance(outputs, (list, tuple)):
-            total_loss = 0
-            weights = [1.0, 0.5, 0.25, 0.125, 0.0625]
-            for i, output in enumerate(outputs):
-                # Interpolate target to match output size
-                if output.shape[2:] != target.shape[2:]:
-                    curr_target = nn.functional.interpolate(target, size=output.shape[2:], mode='nearest')
-                else:
-                    curr_target = target
-                total_loss += weights[i] * self.base_loss(output, curr_target)
-            return total_loss
-        return self.base_loss(outputs, target)
-
-def train(config):
+def train(config, train_files, val_files, fold=0):
     device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
-    logger = Logger.current_logger()
+    clearml_logger = Logger.current_logger()
     
     # 1. Transforms
     train_transforms, val_transforms = get_transforms(config)
@@ -173,66 +109,168 @@ def train(config):
         model = load_pretrained_weights(model, config["model_name"], config["pretrained_path"])
     
     # 4. Loss & Optimizer
-    dice_ce_loss = DiceCELoss(to_onehot_y=False, sigmoid=True) # BraTS labels are often multi-label
-    if config["model_name"] == "swin_der" and config.get("deep_supervision"):
+    dice_ce_loss = DiceCELoss(to_onehot_y=False, sigmoid=True) # Region-based targets are multi-label
+    if config["model_name"] in ["swin_der", "swin_unetr"] and config["deep_supervision"]:
         loss_function = DeepSupervisionLoss(dice_ce_loss)
     else:
         loss_function = dice_ce_loss
         
     optimizer = torch.optim.AdamW(model.parameters(), lr=float(config["lr"]), weight_decay=float(config["weight_decay"]))
     
-    # 5. Data (Mock for structure)
-    # train_ds = Dataset(data=train_files, transform=train_transforms)
-    # val_ds = Dataset(data=val_files, transform=val_transforms)
-    # train_loader = DataLoader(train_ds, batch_size=config["batch_size"], shuffle=True)
-    # val_loader = DataLoader(val_ds, batch_size=1)
+    # 5. Scheduler
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config["max_epochs"])
+    
+    # 6. Data
+    train_loader, val_loader = get_loaders(config, train_files, val_files, train_transforms, val_transforms)
 
-    dice_metric = DiceMetric(include_background=True, reduction="mean")
+    dice_metric = DiceMetric(include_background=False, reduction="mean")
     
     best_dice = 0
+    best_epoch = -1
     for epoch in range(config["max_epochs"]):
-        model.train()
-        epoch_loss = 0
-        # for batch_data in train_loader:
-        #     inputs, labels = batch_data["image"].to(device), batch_data["label"].to(device)
-        #     optimizer.zero_grad()
-        #     outputs = model(inputs)
-        #     loss = loss_function(outputs, labels)
-        #     loss.backward()
-        #     optimizer.step()
-        #     epoch_loss += loss.item()
+        epoch_start = time.monotonic()
+        train_loss = train_epoch(model, train_loader, optimizer, loss_function, device)
+        epoch_time = time.monotonic() - epoch_start
         
-        # logger.report_scalar("Loss", "train", iteration=epoch, value=epoch_loss)
-        logger_log.info(f"Epoch {epoch} completed.")
+        clearml_logger.report_scalar("Loss", "train", iteration=epoch, value=train_loss)
+        clearml_logger.report_scalar("Learning Rate", "lr", iteration=epoch, value=optimizer.param_groups[0]["lr"])
+        clearml_logger.report_scalar("Time", "epoch_sec", iteration=epoch, value=epoch_time)
+        
+        logger.info(f"Fold {fold}, Epoch {epoch} completed. Loss: {train_loss:.4f}, Time: {epoch_time:.2f}s")
 
         if (epoch + 1) % config["val_interval"] == 0:
-            model.eval()
-            with torch.no_grad():
-                # val_dice logic...
-                val_dice = 0.8 # mock
-                logger.report_scalar("Dice", "val", iteration=epoch, value=val_dice)
-                
-                if val_dice > best_dice:
-                    best_dice = val_dice
-                    save_path = f"best_model_{config['model_name']}.pth"
-                    torch.save(model.state_dict(), save_path)
-                    Task.current_task().update_output_model(save_path, name=f"best_{config['model_name']}")
+            val_dice, val_loss, val_dice_per_class, first_case = validate(
+                model, val_loader, device, dice_metric, config, loss_function=dice_ce_loss
+            )
+            
+            clearml_logger.report_scalar("Val Dice", "mean_dice", iteration=epoch, value=val_dice)
+            clearml_logger.report_scalar("Loss", "val", iteration=epoch, value=val_loss)
+            
+            # Логируем Dice по классам (WT, TC, ET)
+            class_names = ["WT", "TC", "ET"]
+            for i, class_name in enumerate(class_names):
+                if i < len(val_dice_per_class):
+                    clearml_logger.report_scalar("Per-class Dice", class_name, iteration=epoch, value=val_dice_per_class[i].item())
 
-if __name__ == "__main__":
+            clearml_logger.report_scalar("Best Val Dice so far", "best_dice", iteration=epoch, value=max(best_dice, val_dice))
+            
+            per_class_info = ", ".join([f"{name}: {val.item():.4f}" for name, val in zip(class_names, val_dice_per_class)])
+            logger.info(f"Fold {fold}, Epoch {epoch} Validation Dice: {val_dice:.4f}, Loss: {val_loss:.4f} ({per_class_info})")
+            
+            if val_dice > best_dice:
+                best_dice = val_dice
+                best_epoch = epoch
+                save_checkpoint(model, config, fold)
+                if first_case is not None:
+                    log_validation_example(first_case, clearml_logger, epoch, fold)
+        
+        scheduler.step()
+
+    # Итоговые значения для удобства сравнения в таблице
+    clearml_logger.report_single_value("best_val_dice", best_dice)
+    clearml_logger.report_single_value("best_epoch", best_epoch)
+
+    return best_dice, best_epoch
+
+def main():
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
     parser = argparse.ArgumentParser(description="Train Adult Glioma Segmentation Model")
     parser.add_argument("--config", type=str, default="configs/swin_unetr.yaml", help="Path to the specific config file")
     parser.add_argument("--base_config", type=str, default="configs/base.yaml", help="Path to the base config file")
+    parser.add_argument("--fold", type=str, default="0", help="Fold index to train (0-4), list of indices (0,1,2), or 'all'")
+    parser.add_argument("--stage", type=str, default="base", choices=["base", "hpo", "final", "cv"], help="Experiment stage")
+    parser.add_argument("--run_id", type=int, default=0, help="Run ID")
+    parser.add_argument("--comment", type=str, default="", help="Experiment comment")
+    parser.add_argument("--status", type=str, default="baseline", help="Experiment status (e.g., baseline, trash, candidate, best_so_far, final)")
+    parser.add_argument("--suffix", type=str, default="", help="Optional suffix for the task name")
     args = parser.parse_args()
 
     # Загружаем конфигурацию
     config = load_config(args.config, args.base_config)
 
     # Настройка ClearML
+    task_name = f"{args.stage}_{config['model_name']}_r{args.run_id}_f{args.fold}{args.suffix}"
     task = Task.init(
         project_name='AdultGliomaSegmentation', 
-        task_name=f'Train_{config["model_name"]}',
+        task_name=task_name,
         task_type=Task.TaskTypes.training
     )
     task.connect(config)
+    
+    # Установка тегов
+    tags = [
+        f"model:{config['model_name']}",
+        f"fold:{args.fold}",
+        f"stage:{args.stage}",
+        f"status:{args.status}",
+    ]
+    if "lr" in config:
+        tags.append(f"lr:{config['lr']}")
+    if "weight_decay" in config:
+        tags.append(f"weight decay:{config['weight_decay']}")
+    
+    task.set_tags(tags)
 
-    train(config)
+    if args.comment:
+        task.set_comment(args.comment)
+
+    # Получаем фолды
+    metadata_path = "data/processed/metadata.csv"
+    if not Path(metadata_path).exists():
+        logger.error(f"Metadata not found at {metadata_path}. Run collection scripts first.")
+        sys.exit(1)
+        
+    folds_data = get_folds(metadata_path, n_splits=config["n_splits"])
+    
+    if args.fold.lower() == "all":
+        fold_indices = list(range(len(folds_data)))
+    else:
+        try:
+            fold_indices = [int(f.strip()) for f in args.fold.split(",")]
+        except ValueError:
+            logger.error(f"Invalid fold format: {args.fold}. Use integer, comma-separated integers, or 'all'.")
+            sys.exit(1)
+
+    for f_idx in fold_indices:
+        if f_idx >= len(folds_data):
+            logger.error(f"Fold index {f_idx} out of range (0-{len(folds_data)-1})")
+            sys.exit(1)
+            
+    summary_results = []
+
+    for f_idx in fold_indices:
+        logger.info(f"Starting training for fold {f_idx}")
+        current_fold = folds_data[f_idx]
+        train_files = get_data_dicts(current_fold['train'])
+        val_files = get_data_dicts(current_fold['val'])
+        
+        logger.info(f"Train samples: {len(train_files)}, Val samples: {len(val_files)}")
+
+        best_dice, best_epoch = train(config, train_files, val_files, fold=f_idx)
+        
+        summary_results.append({
+            "fold": f_idx,
+            "best_val_dice": round(best_dice, 4),
+            "best_epoch": best_epoch,
+            "train_samples": len(train_files),
+            "val_samples": len(val_files)
+        })
+
+    # Вывод сводной таблицы
+    df_summary = pd.DataFrame(summary_results)
+    print("\n" + "="*50)
+    print("SUMMARY TABLE BY FOLDS")
+    print("="*50)
+    print(df_summary.to_string(index=False))
+    print("="*50 + "\n")
+
+    # Логируем таблицу в ClearML
+    task.get_logger().report_table(
+        "Cross-Validation Summary", 
+        "summary_table", 
+        iteration=0, 
+        table_plot=df_summary
+    )
+
+if __name__ == "__main__":
+    main()
