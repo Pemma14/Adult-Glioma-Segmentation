@@ -25,7 +25,7 @@ def collect_metadata():
         'dim_x', 'dim_y', 'dim_z', 'channels', 
         'spacing_x', 'spacing_y', 'spacing_z', 'flair_hash',
         'label_0_voxels', 'label_1_voxels', 'label_2_voxels', 'label_3_voxels',
-        'total_tumor_voxels'
+        'total_tumor_voxels', 'fold'
     ]
     
     logger.info("Collecting metadata, hashes and label statistics (this may take a few minutes)...")
@@ -81,18 +81,35 @@ def collect_metadata():
                     round(float(z[0]), 2), round(float(z[1]), 2), round(float(z[2]), 2),
                     flair_hash,
                     label_stats[0], label_stats[1], label_stats[2], label_stats[3],
-                    total_tumor
+                    total_tumor,
+                    -1 # Значение по умолчанию для fold
                 ])
             except Exception as e:
                 logger.error(f"Error processing {pid} in {ds}: {e}")
                 
     output_csv = proc_dir / 'metadata.csv'
-    with open(output_csv, 'w', newline='') as f:
-        w = csv.writer(f)
-        w.writerow(headers)
-        w.writerows(records)
+    
+    # Конвертируем в DataFrame для удобного присвоения фолдов
+    import pandas as pd
+    from sklearn.model_selection import StratifiedKFold
+    
+    df = pd.DataFrame(records, columns=headers)
+    
+    msd_mask = df['dataset'] == 'MSD_BrainTumour'
+    msd_df = df[msd_mask].copy()
+    
+    if len(msd_df) > 0:
+        logger.info("Assigning folds for MSD_BrainTumour...")
+        msd_df['volume_bin'] = pd.qcut(msd_df['total_tumor_voxels'], q=5, labels=False, duplicates='drop')
+        skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
         
-    logger.info(f"Updated metadata saved to {output_csv}")
+        for fold_idx, (_, val_idx) in enumerate(skf.split(msd_df, msd_df['volume_bin'])):
+            msd_df.iloc[val_idx, msd_df.columns.get_loc('fold')] = fold_idx
+            
+        df.loc[msd_mask, 'fold'] = msd_df['fold'].values
+        
+    df.to_csv(output_csv, index=False)
+    logger.info(f"Updated metadata with folds saved to {output_csv}")
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
