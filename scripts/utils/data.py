@@ -26,17 +26,20 @@ def load_config(config_path, base_config_path="configs/base.yaml"):
 
 def get_folds(metadata_path, n_splits=5):
     df = pd.read_csv(metadata_path)
-    df = df[df['dataset'] == 'MSD_BrainTumour'].copy()
-    # Стратификация по объему (делим на 5 квантилей)
-    df['volume_bin'] = pd.qcut(df['total_tumor_voxels'], q=5, labels=False, duplicates='drop')
+    msd_df = df[df['dataset'] == 'MSD_BrainTumour'].copy()
     
-    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
-
+    if 'fold' not in msd_df.columns:
+        raise ValueError(f"Колонка 'fold' не найдена в {metadata_path}. Запустите scripts/fix_metadata_folds.py.")
+    
     folds = []
-    for train_idx, val_idx in skf.split(df, df['volume_bin']):
+    # Мы используем n_splits из конфига, но колонка fold жестко зафиксирована на 5 фолдов
+    # Если в будущем n_splits изменится, нужно будет перегенерировать колонку fold
+    for i in range(n_splits):
+        train_df = msd_df[msd_df['fold'] != i]
+        val_df = msd_df[msd_df['fold'] == i]
         folds.append({
-            'train': df.iloc[train_idx],
-            'val': df.iloc[val_idx]
+            'train': train_df,
+            'val': val_df
         })
     return folds
 
