@@ -27,6 +27,26 @@ def main():
     logger.info("=== Starting Data Preparation Master Script ===")
     
     try:
+        # 0. Валидация сырых данных (Fail-Fast)
+        logger.info("\n--- STEP 0: Validating raw data ---")
+        raw_success = True
+        
+        # Проверка целостности NIfTI файлов (читаемость и отсутствие NaNs)
+        if not validate_integrity(['data/raw/MSD_BrainTumour', 'data/raw/UPENN-GBM']):
+            raw_success = False
+            
+        # Проверка соответствия папок в сырых данных MSD
+        if not validate_msd_consistency('data/raw/MSD_BrainTumour'):
+            raw_success = False
+            
+        # Проверка полноты модальностей в сырых данных UPENN
+        if not validate_upenn_consistency('data/raw/UPENN-GBM'):
+            raw_success = False
+            
+        if not raw_success:
+            logger.error("\n[!] Raw data validation FAILED. Please fix the issues before processing.")
+            sys.exit(1)
+
         # 1. Импорт MSD (копирование и исправление dataset.json)
         logger.info("\n--- STEP 1: Importing MSD dataset ---")
         import_msd()
@@ -39,21 +59,9 @@ def main():
         logger.info("\n--- STEP 3: Collecting metadata, hashes and label stats ---")
         collect_metadata()
         
-        # 4. Валидация (запуск всех проверок качества)
-        logger.info("\n--- STEP 4: Running all validation checks ---")
+        # 4. Валидация (запуск финальных проверок качества)
+        logger.info("\n--- STEP 4: Running final validation checks ---")
         success = True
-        
-        # Проверка целостности NIfTI файлов (читаемость и отсутствие NaNs)
-        if not validate_integrity(['data/raw/MSD_BrainTumour', 'data/raw/UPENN-GBM']):
-            success = False
-            
-        # Проверка соответствия папок в сырых данных MSD
-        if not validate_msd_consistency('data/raw/MSD_BrainTumour'):
-            success = False
-            
-        # Проверка полноты модальностей в сырых данных UPENN
-        if not validate_upenn_consistency('data/raw/UPENN-GBM'):
-            success = False
             
         # Проверка на наличие дубликатов пациентов между датасетами
         if not validate_duplicates('data/processed/metadata.csv'):

@@ -83,8 +83,7 @@ class DeformableConvV3D(nn.Module):
             stride=self.stride,
             padding=self.padding,
             dilation=self.dilation,
-            groups=self.groups,
-            deformable_groups=self.deformable_groups
+            groups=self.groups
         )
 
     def reset_parameters(self):

@@ -34,6 +34,9 @@ environments = [
     #"sys_platform == 'linux' and platform_machine == 'x86_64'"
 ]
 
+[tool.uv.sources]
+tvdcn = { git = "https://github.com/inspiros/tvdcn.git", rev = "v0.4.0" }
+
 [project.optional-dependencies]
 gpu = [
     "tvdcn",

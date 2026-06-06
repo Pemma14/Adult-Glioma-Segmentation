@@ -6,7 +6,6 @@ from monai.transforms import (
     Orientationd,
     RandFlipd,
     RandCropByPosNegLabeld,
-    ScaleIntensityRangePercentilesd,
     Spacingd,
     MapTransform,
     ToTensord,
@@ -48,7 +47,7 @@ class ConvertToMultiChannelMSDd(MapTransform):
             # ET: ET(3)
             result.append(d[key] == 3)
             
-            d[key] = torch.stack(result, axis=0).float()
+            d[key] = torch.cat(result, axis=0).float()
         return d
 
 class AddMultiScaleLabelsd(MapTransform):
@@ -80,23 +79,15 @@ def get_transforms(config):
     train_transforms_list = [
         #Препроцессинг
         LoadImaged(keys=["image", "label"]),
-        EnsureChannelFirstd(keys=["image", "label"]),
-        Orientationd(keys=["image", "label"], axcodes="RAS"),
+        EnsureChannelFirstd(keys=["image"], channel_dim=-1),
+        EnsureChannelFirstd(keys=["label"], channel_dim="no_channel"),
+        Orientationd(keys=["image", "label"], axcodes="RAS", labels=None),
         Spacingd(
             keys=["image", "label"],
             pixdim=(1.0, 1.0, 1.0),
             mode=("bilinear", "nearest"),
         ),
         CropForegroundd(keys=["image", "label"], source_key="image"),
-        ScaleIntensityRangePercentilesd(
-            keys="image",
-            lower=0.5,
-            upper=99.5,
-            b_min=0.0,
-            b_max=1.0,
-            clip=True,
-            channel_wise=True,
-        ),
         NormalizeIntensityd(keys="image", nonzero=True, channel_wise=True),
         ConvertToMultiChannelMSDd(keys="label"),
         SpatialPadd(keys=["image", "label"], spatial_size=config["img_size"]),
@@ -107,7 +98,7 @@ def get_transforms(config):
             spatial_size=config["img_size"],
             pos=1,
             neg=1,
-            num_samples=4,
+            num_samples=2,
         ),
         RandAffined(
             keys=["image", "label"],
@@ -138,23 +129,15 @@ def get_transforms(config):
 
     val_transforms = Compose([
         LoadImaged(keys=["image", "label"]),
-        EnsureChannelFirstd(keys=["image", "label"]),
-        Orientationd(keys=["image", "label"], axcodes="RAS"),
+        EnsureChannelFirstd(keys=["image"], channel_dim=-1),
+        EnsureChannelFirstd(keys=["label"], channel_dim="no_channel"),
+        Orientationd(keys=["image", "label"], axcodes="RAS", labels=None),
         Spacingd(
             keys=["image", "label"],
             pixdim=(1.0, 1.0, 1.0),
             mode=("bilinear", "nearest"),
         ),
         CropForegroundd(keys=["image", "label"], source_key="image"),
-        ScaleIntensityRangePercentilesd(
-            keys="image",
-            lower=0.5,
-            upper=99.5,
-            b_min=0.0,
-            b_max=1.0,
-            clip=True,
-            channel_wise=True,
-        ),
         NormalizeIntensityd(keys="image", nonzero=True, channel_wise=True),
         ConvertToMultiChannelMSDd(keys="label"),
         SpatialPadd(keys=["image", "label"], spatial_size=config["img_size"]),
