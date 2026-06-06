@@ -175,18 +175,30 @@ def train(config, train_files, val_files, fold=0):
 def main():
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
     parser = argparse.ArgumentParser(description="Train Adult Glioma Segmentation Model")
-    parser.add_argument("--config", type=str, default="configs/swin_unetr.yaml", help="Path to the specific config file")
     parser.add_argument("--base_config", type=str, default="configs/base.yaml", help="Path to the base config file")
+    parser.add_argument("--config", type=str, default="configs/configs/unet3d.yaml", choices= ["configs/unet3d.yaml", "configs/swin_unetr.yaml", "configs/swin_der.yaml"], help="Path to the specific config file")
     parser.add_argument("--fold", type=str, default="0", help="Fold index to train (0-4), list of indices (0,1,2), or 'all'")
     parser.add_argument("--stage", type=str, default="base", choices=["base", "hpo", "final", "cv"], help="Experiment stage")
     parser.add_argument("--run_id", type=int, default=0, help="Run ID")
+    parser.add_argument("--suffix", type=str, default="", help="Optional suffix for the task name")
+    parser.add_argument("--lr", type=float, help="Override learning rate")
+    parser.add_argument("--weight_decay", type=float, help="Override weight decay")
+    parser.add_argument("--batch_size", type=int, help="Override batch size")
+    parser.add_argument("--img_size", type=int, nargs=3, help="Override image size (e.g., --img_size 128 128 128)")
     parser.add_argument("--comment", type=str, default="", help="Experiment comment")
     parser.add_argument("--status", type=str, default="baseline", help="Experiment status (e.g., baseline, trash, candidate, best_so_far, final)")
-    parser.add_argument("--suffix", type=str, default="", help="Optional suffix for the task name")
     args = parser.parse_args()
 
     # Загружаем конфигурацию
     config = load_config(args.config, args.base_config)
+    if args.lr:
+        config["lr"] = args.lr
+    if args.weight_decay:
+        config["weight_decay"] = args.weight_decay
+    if args.batch_size:
+        config["batch_size"] = args.batch_size
+    if args.img_size:
+        config["img_size"] = args.img_size  # Это запишет список [128, 128, 128]
 
     # Настройка ClearML
     task_name = f"{args.stage}_{config['model_name']}_r{args.run_id}_f{args.fold}{args.suffix}"
@@ -208,7 +220,11 @@ def main():
         tags.append(f"lr:{config['lr']}")
     if "weight_decay" in config:
         tags.append(f"weight decay:{config['weight_decay']}")
-    
+    if "batch_size" in config:
+        tags.append(f"batch size:{config['batch_size']}")
+    if "img_size" in config:
+        tags.append(f"image size:{config['image_size'][0]}x{config['image_size'][1]}x{config['image_size'][2]}")
+
     task.set_tags(tags)
 
     if args.comment:
