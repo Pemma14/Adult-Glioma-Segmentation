@@ -4,6 +4,8 @@ import pandas as pd
 import torch
 from sklearn.model_selection import StratifiedKFold
 from monai.data import DataLoader, CacheDataset
+from scripts.prepare_data import ROOT_DIR
+
 
 def load_config(config_path, base_config_path="configs/base.yaml"):
     base_path = Path(base_config_path)
@@ -48,8 +50,8 @@ def get_data_dicts(df_subset):
     for _, row in df_subset.iterrows():
         ds = row['dataset']
         data_dicts.append({
-            "image": f"data/processed/{ds}/{row['image_path']}",
-            "label": f"data/processed/{ds}/{row['label_path']}",
+            "image": f"{ROOT_DIR}/data/processed/{ds}/{row['image_path']}",
+            "label": f"{ROOT_DIR}/data/processed/{ds}/{row['label_path']}",
             "case_id": Path(row['image_path']).name.split('.')[0]
         })
     return data_dicts
@@ -59,25 +61,25 @@ def get_loaders(config, train_files, val_files, train_transforms, val_transforms
         data=train_files,
         transform=train_transforms,
         cache_rate=config.get("cache_rate", 1.0),
-        num_workers=config.get("num_workers_cache", 4)
+        num_workers=config.get("num_workers_cache", 8)
     )
     val_ds = CacheDataset(
         data=val_files,
         transform=val_transforms,
         cache_rate=config.get("cache_rate", 1.0),
-        num_workers=config.get("num_workers_cache", 2)
+        num_workers=config.get("num_workers_cache", 4)
     )
     train_loader = DataLoader(
         train_ds,
         batch_size=config["batch_size"],
         shuffle=True,
-        num_workers=4,
-        pin_memory=torch.cuda.is_available()
+        num_workers=8,
+        pin_memory=torch.cuda.is_available(),
     )
     val_loader = DataLoader(
         val_ds,
         batch_size=1,
-        num_workers=2,
-        pin_memory=torch.cuda.is_available()
+        num_workers=4,
+        pin_memory=torch.cuda.is_available(),
     )
     return train_loader, val_loader

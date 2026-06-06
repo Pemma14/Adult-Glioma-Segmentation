@@ -63,8 +63,8 @@ requires-dist = [
     { name = "torchvision", marker = "sys_platform == 'darwin'", specifier = ">=0.17.0" },
     { name = "torchvision", marker = "sys_platform == 'linux'", specifier = ">=0.19.0" },
     { name = "tqdm", specifier = ">=4.66.0" },
-    { name = "tvdcn" },
-    { name = "tvdcn", marker = "extra == 'gpu'" },
+    { name = "tvdcn", git = "https://github.com/inspiros/tvdcn.git?rev=v0.4.0" },
+    { name = "tvdcn", marker = "extra == 'gpu'", git = "https://github.com/inspiros/tvdcn.git?rev=v0.4.0" },
 ]
 provides-extras = ["gpu"]
 
@@ -2549,12 +2549,11 @@ wheels = [
 
 [[package]]
 name = "tvdcn"
-version = "0.5.0"
-source = { registry = "https://pypi.org/simple" }
+version = "0.4.0"
+source = { git = "https://github.com/inspiros/tvdcn.git?rev=v0.4.0#f9b761cce90b3e2e630852cafab01272f552d03e" }
 dependencies = [
     { name = "torch", marker = "platform_machine == 'x86_64' and sys_platform == 'darwin'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/6a/96/7d947180f05248932878211ed665ead5d00ac2bf9320d8a4786913d59a8e/tvdcn-0.5.0.tar.gz", hash = "sha256:d74e4b917c4e84fa6becf46fee4d6fd6aae4dc884079f1a8fd284e0118cd899d", size = 80778, upload-time = "2023-10-14T07:36:07.588Z" }
 
 [[package]]
 name = "typer"

@@ -150,7 +150,7 @@ class SwinDER3D(nn.Module):
         # --- Сегментационные головки (deep supervision) ---
         output0 = self.out(out)      # полное разрешение
 
-        if self.deep_supervision:
+        if self.deep_supervision and self.training:
             output1 = self.out1(dec0)    # /2
             output2 = self.out2(dec1)    # /4
             output3 = self.out3(dec2)    # /8

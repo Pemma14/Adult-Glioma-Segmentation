@@ -1,8 +1,8 @@
 model_name: "swin_der"
 
 # Параметры обучения
-batch_size: 1
-max_epochs: 200
+batch_size: 2
+max_epochs: 500
 lr: 0.0002
 weight_decay: 0.01
 transfer_learning: true
@@ -13,7 +13,7 @@ img_size: [128, 128, 128]
 # Параметры архитектуры
 feature_size: 48
 deep_supervision: true
-use_checkpoint: false
+use_checkpoint: true
 norm_name: "instance"
 drop_rate: 0.0
 attn_drop_rate: 0.0

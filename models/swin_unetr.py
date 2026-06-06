@@ -158,12 +158,12 @@ class SwinUNETR(nn.Module):
         dec0 = self.decoder2(dec1, enc1)
         out = self.decoder1(dec0, enc0)
         
-        if self.deep_supervision:
-            output0 = self.out(out)
+        output = self.out(out)
+        if self.deep_supervision and self.training:
             output1 = self.out1(dec0)
             output2 = self.out2(dec1)
             output3 = self.out3(dec2)
             output4 = self.out4(dec3)
-            return [output0, output1, output2, output3, output4]
+            return [output, output1, output2, output3, output4]
         
-        return self.out(out)
+        return output
