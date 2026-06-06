@@ -5,11 +5,11 @@ from typing import Union, Sequence, Optional
 from monai.networks.blocks.convolutions import Convolution
 from monai.networks.layers.factories import Conv
 
-from mmcv.ops import deform_conv3d
+from tvdcn.ops import deform_conv3d
 
 class DeformableConvV3D(nn.Module):
     """
-    3D Deformable Convolution V2 implementation using mmcv.
+    3D Deformable Convolution V2 implementation using tvdcn.
     """
     def __init__(
         self,
@@ -39,8 +39,13 @@ class DeformableConvV3D(nn.Module):
         self.weight = nn.Parameter(torch.empty(out_channels, in_channels // groups, *self.kernel_size))
         self.bias = nn.Parameter(torch.empty(out_channels))
 
-        # Offset + mask: 4 канала на каждую точку ядра (3 смещения + 1 маска)
-        out_ch_offset_mask = self.deformable_groups * (3 + 1) * math.prod(self.kernel_size)
+        # В DCNv2 для 3D: 3 смещения + 1 маска на каждую точку ядра
+        n_kernel_points = math.prod(self.kernel_size)
+        self.offset_channels = self.deformable_groups * 3 * n_kernel_points
+        self.mask_channels = self.deformable_groups * n_kernel_points
+        
+        out_ch_offset_mask = self.offset_channels + self.mask_channels
+        
         self.conv_offset_mask = Conv[Conv.CONV, 3](
             in_channels=in_channels,
             out_channels=out_ch_offset_mask,
@@ -65,21 +70,21 @@ class DeformableConvV3D(nn.Module):
     def forward(self, x):
         # Вычисляем смещения и маску
         offset_mask = self.conv_offset_mask(x)
-        outputs = torch.chunk(offset_mask, 4, dim=1)  # 3 канала offsets + 1 канал mask
-        offset = torch.cat(outputs[:3], dim=1)
-        mask = torch.sigmoid(outputs[3])
+        
+        offset = offset_mask[:, :self.offset_channels, ...]
+        mask = torch.sigmoid(offset_mask[:, self.offset_channels:, ...])
 
         return deform_conv3d(
             input=x,
-            offset=offset,
-            alpha=mask,
             weight=self.weight,
+            offset=offset,
+            mask=mask,
             bias=self.bias,
             stride=self.stride,
             padding=self.padding,
             dilation=self.dilation,
-            n_weight_groups=self.groups,
-            n_offset_groups=self.deformable_groups,
+            groups=self.groups,
+            deformable_groups=self.deformable_groups
         )
 
     def reset_parameters(self):
