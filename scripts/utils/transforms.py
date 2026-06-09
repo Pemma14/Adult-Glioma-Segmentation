@@ -15,6 +15,11 @@ from monai.transforms import (
     Rand3DElasticd,
     RandAdjustContrastd,
     RandAffined,
+    RandGaussianNoised,
+    RandGaussianSmoothd,
+    RandScaleIntensityd,
+    RandShiftIntensityd,
+    RandSimulateLowResolutiond,
 )
 
 class ConvertToMultiChannelMSDd(MapTransform):
@@ -115,7 +120,22 @@ def get_transforms(config):
             spatial_size=config["img_size"],
             mode=("bilinear", "nearest"),
         ),
+        RandGaussianNoised(keys=["image"], prob=0.15, mean=0.0, std=0.1),
+        RandGaussianSmoothd(
+            keys=["image"],
+            sigma_x=(0.5, 1.0),
+            sigma_y=(0.5, 1.0),
+            sigma_z=(0.5, 1.0),
+            prob=0.15,
+        ),
+        RandScaleIntensityd(keys="image", factors=0.1, prob=0.15),
+        RandShiftIntensityd(keys="image", offsets=0.1, prob=0.15),
         RandAdjustContrastd(keys="image", prob=0.5, gamma=(0.7, 1.5)),
+        RandSimulateLowResolutiond(
+            keys=["image"],
+            prob=0.25,
+            zoom_range=(0.5, 1.0),
+        ),
         RandFlipd(keys=["image", "label"], prob=0.5, spatial_axis=0),
         RandFlipd(keys=["image", "label"], prob=0.5, spatial_axis=1),
         RandFlipd(keys=["image", "label"], prob=0.5, spatial_axis=2),
