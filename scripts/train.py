@@ -20,7 +20,14 @@ from scripts.prepare_data import ROOT_DIR
 from scripts.utils.data import load_config, get_folds, get_data_dicts, get_loaders
 from scripts.utils.transforms import get_transforms
 from scripts.utils.visualization import log_validation_example
-from scripts.utils.model import load_pretrained_weights, save_checkpoint, load_checkpoint, DeepSupervisionLoss
+from scripts.utils.model import (
+    load_pretrained_weights,
+    save_checkpoint,
+    load_checkpoint,
+    DeepSupervisionLoss,
+    peek_task_id,
+    _checkpoint_path,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -191,10 +198,19 @@ def train(config, train_files, val_files, fold=0, resume_checkpoint=None):
                 save_checkpoint(
                     model, config, fold,
                     optimizer=optimizer, scheduler=scheduler,
-                    scaler=scaler, epoch=epoch, best_dice=best_dice
+                    scaler=scaler, epoch=epoch, best_dice=best_dice,
+                    is_best=True,
                 )
                 if first_case is not None:
                     log_validation_example(first_case, clearml_logger, epoch, fold)
+
+            # Регулярный last‑чекпойнт для resume (раз в val_interval)
+            save_checkpoint(
+                model, config, fold,
+                optimizer=optimizer, scheduler=scheduler,
+                scaler=scaler, epoch=epoch, best_dice=best_dice,
+                is_best=False,
+            )
 
             # Early stopping
             if config.get("patience"):
@@ -215,21 +231,25 @@ def main():
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
     parser = argparse.ArgumentParser(description="Train Adult Glioma Segmentation Model")
     parser.add_argument("--base_config", type=str, default="configs/base.yaml", help="Path to the base config file")
-    parser.add_argument("--config", type=str, default="configs/unet3d.yaml", help="Path to the specific config file")
-    parser.add_argument("--fold", type=str, default="0", help="Fold index to train (0-4), list of indices (0,1,2), or 'all'")
-    parser.add_argument("--stage", type=str, default="research", choices=["research", "hpo", "final", "cv"], help="Experiment stage")
-    parser.add_argument("--suffix", type=str, default="", help="Optional suffix for the task name")
+    parser.add_argument("--config", type=str, default=None, help="Path to the specific config file")
+    parser.add_argument("--fold", type=str, default=None, help="Fold index to train (0-4), list of indices (0,1,2), or 'all'")
+    parser.add_argument("--stage", type=str, default=None, choices=["research", "hpo", "final", "cv"], help="Experiment stage")
+    parser.add_argument("--suffix", type=str, default=None, help="Optional suffix for the task name")
     parser.add_argument("--lr", type=float, help="Override learning rate")
     parser.add_argument("--weight_decay", type=float, help="Override weight decay")
     parser.add_argument("--batch_size", type=int, help="Override batch size")
     parser.add_argument("--img_size", type=int, nargs=3, help="Override image size (e.g., --img_size 128 128 128)")
     parser.add_argument("--max_epochs", type=int, help="Override max epochs")
-    parser.add_argument("--patience", type=int, default="10", help="Early stopping patience (in val_intervals)")
+    parser.add_argument("--patience", type=int, default=None, help="Early stopping patience (in val_intervals)")
     parser.add_argument("--val_interval", type=int, help="Override validation interval (epochs)")
     parser.add_argument("--sw_batch_size", type=int, help="Override sliding window batch size for validation")
     parser.add_argument("--resume_checkpoint", type=str, default=None, help="Path to checkpoint to resume training from")
-    parser.add_argument("--comment", type=str, default="", help="Experiment comment")
-    parser.add_argument("--status", type=str, default="", help="Experiment status (e.g., baseline, trash, candidate, best_so_far, final)")
+    parser.add_argument("--auto_resume", action="store_true",
+                        help="Auto-resume from last_*.pth checkpoint if it exists (per fold)")
+    parser.add_argument("--clearml_task_id", type=str, default=None,
+                        help="Continue existing ClearML task by id (auto-detected from checkpoint if not set)")
+    parser.add_argument("--comment", type=str, default=None, help="Experiment comment")
+    parser.add_argument("--status", type=str, default=None, help="Experiment status (e.g., baseline, trash, candidate, best_so_far, final)")
     args = parser.parse_args()
 
     # Загружаем конфигурацию
@@ -251,36 +271,14 @@ def main():
     if args.sw_batch_size:
         config["sw_batch_size"] = args.sw_batch_size
 
-    # Настройка ClearML
-    task_name = f"{args.stage}_{config['model_name']}_f{args.fold}{args.suffix}"
-    task = Task.init(
-        project_name='AdultGliomaSegmentation', 
-        task_name=task_name,
-        task_type=Task.TaskTypes.training
-    )
-    task.connect(config)
-    
-    # Установка тегов
-    tags = [
-        f"model:{config['model_name']}",
-        f"fold:{args.fold}",
-        f"stage:{args.stage}",
-        f"status:{args.status}",
-    ]
-
-    task.set_tags(tags)
-
-    if args.comment:
-        task.set_comment(args.comment)
-
-    # Получаем фолды
+    # Получаем фолды (нужно до Task.init, чтобы определить resume для первого фолда)
     metadata_path = ROOT_DIR / "data/processed/metadata.csv"
     if not Path(metadata_path).exists():
         logger.error(f"Metadata not found at {metadata_path}. Run collection scripts first.")
         sys.exit(1)
-        
+
     folds_data = get_folds(metadata_path, n_splits=config["n_splits"])
-    
+
     if args.fold.lower() == "all":
         fold_indices = list(range(len(folds_data)))
     else:
@@ -295,6 +293,49 @@ def main():
             logger.error(f"Fold index {f_idx} out of range (0-{len(folds_data)-1})")
             sys.exit(1)
 
+    def resolve_resume_path(fold_idx):
+        """Возвращает путь к чекпойнту для resume: явный --resume_checkpoint или
+        авто-найденный last_*.pth, если включён --auto_resume."""
+        if args.resume_checkpoint:
+            return args.resume_checkpoint
+        if args.auto_resume:
+            last_path = _checkpoint_path(config["model_name"], fold_idx, is_best=False)
+            if Path(last_path).exists():
+                logger.info(f"Auto-resume: found checkpoint {last_path} for fold {fold_idx}")
+                return last_path
+        return None
+
+    # Определяем task_id для продолжения ClearML‑таска
+    # Приоритет: явный --clearml_task_id > task_id из чекпойнта первого фолда
+    first_resume_path = resolve_resume_path(fold_indices[0])
+    clearml_task_id = args.clearml_task_id or peek_task_id(first_resume_path)
+    if clearml_task_id:
+        logger.info(f"Continuing ClearML task: {clearml_task_id}")
+
+    # Настройка ClearML
+    task_name = f"{args.stage}_{config['model_name']}_f{args.fold}{args.suffix}"
+    task = Task.init(
+        project_name='AdultGliomaSegmentation',
+        task_name=task_name,
+        task_type=Task.TaskTypes.training,
+        continue_last_task=bool(clearml_task_id),
+        reuse_last_task_id=clearml_task_id or False,
+    )
+    task.connect(config)
+
+    # Установка тегов
+    tags = [
+        f"model:{config['model_name']}",
+        f"fold:{args.fold}",
+        f"stage:{args.stage}",
+        f"status:{args.status}",
+    ]
+
+    task.set_tags(tags)
+
+    if args.comment:
+        task.set_comment(args.comment)
+
     summary_results = []
 
     for f_idx in fold_indices:
@@ -302,10 +343,11 @@ def main():
         current_fold = folds_data[f_idx]
         train_files = get_data_dicts(current_fold['train'])
         val_files = get_data_dicts(current_fold['val'])
-        
+
         logger.info(f"Train samples: {len(train_files)}, Val samples: {len(val_files)}")
 
-        best_dice, best_epoch = train(config, train_files, val_files, fold=f_idx, resume_checkpoint=args.resume_checkpoint)
+        fold_resume = resolve_resume_path(f_idx)
+        best_dice, best_epoch = train(config, train_files, val_files, fold=f_idx, resume_checkpoint=fold_resume)
         
         summary_results.append({
             "fold": f_idx,
