@@ -103,7 +103,7 @@ def get_transforms(config):
             spatial_size=config["img_size"],
             pos=1,
             neg=1,
-            num_samples=2,
+            num_samples=config.get("num_samples", 2),
         ),
         RandAffined(
             keys=["image", "label"],

@@ -9,6 +9,7 @@ transfer_learning: false
 
 # Параметры пайплайна / инференса
 img_size: [128, 128, 128]
+num_samples: 2
 
 # Параметры архитектуры UNet
 channels: [32, 64, 128, 256, 320]
