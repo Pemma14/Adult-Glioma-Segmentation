@@ -238,6 +238,7 @@ def main():
     parser.add_argument("--lr", type=float, help="Override learning rate")
     parser.add_argument("--weight_decay", type=float, help="Override weight decay")
     parser.add_argument("--batch_size", type=int, help="Override batch size")
+    parser.add_argument("--num_samples", type=int, help="Override number of random crops per training sample")
     parser.add_argument("--img_size", type=int, nargs=3, help="Override image size (e.g., --img_size 128 128 128)")
     parser.add_argument("--max_epochs", type=int, help="Override max epochs")
     parser.add_argument("--patience", type=int, default=None, help="Early stopping patience (in val_intervals)")
@@ -260,6 +261,8 @@ def main():
         config["weight_decay"] = args.weight_decay
     if args.batch_size:
         config["batch_size"] = args.batch_size
+    if args.num_samples is not None:
+        config["num_samples"] = args.num_samples
     if args.img_size:
         config["img_size"] = args.img_size
     if args.max_epochs:

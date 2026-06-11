@@ -9,6 +9,7 @@ transfer_learning: true
 
 # Параметры пайплайна / инференса
 img_size: [128, 128, 128]
+num_samples: 4
 
 # Параметры архитектуры
 feature_size: 48
