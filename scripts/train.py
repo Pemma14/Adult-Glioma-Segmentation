@@ -18,6 +18,7 @@ from models import get_model
 from scripts.prepare_data import ROOT_DIR
 
 from scripts.utils.data import load_config, get_folds, get_data_dicts, get_loaders
+from scripts.utils.config_schema import validate_config, get_required_training_keys
 from scripts.utils.transforms import get_transforms
 from scripts.utils.visualization import log_validation_example
 from scripts.utils.model import (
@@ -213,7 +214,7 @@ def train(config, train_files, val_files, fold=0, resume_checkpoint=None):
             )
 
             # Early stopping
-            if config.get("patience"):
+            if config["patience"]:
                 epochs_without_improvement = epoch - best_epoch
                 if epochs_without_improvement > config["patience"] * config["val_interval"]:
                     logger.info(f"Early stopping at epoch {epoch}. Best dice: {best_dice:.4f} at epoch {best_epoch}")
@@ -253,8 +254,10 @@ def main():
     parser.add_argument("--status", type=str, default=None, help="Experiment status (e.g., baseline, trash, candidate, best_so_far, final)")
     args = parser.parse_args()
 
-    # Загружаем конфигурацию
+    # Загружаем конфигурацию, затем валидируем обязательные ключи для конкретной модели (fast-fail)
     config = load_config(args.config, args.base_config)
+    required_keys = get_required_training_keys(config["model_name"])
+    validate_config(config, required_keys, context=f"конфиге {args.config or args.base_config}")
     if args.lr:
         config["lr"] = args.lr
     if args.weight_decay:

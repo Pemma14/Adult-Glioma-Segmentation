@@ -103,7 +103,7 @@ def get_transforms(config):
             spatial_size=config["img_size"],
             pos=1,
             neg=1,
-            num_samples=config.get("num_samples", 2),
+            num_samples=config["num_samples"],
         ),
         RandAffined(
             keys=["image", "label"],
@@ -142,7 +142,7 @@ def get_transforms(config):
         ToTensord(keys=["image", "label"]),
     ]
 
-    if config.get("deep_supervision", False):
+    if config["deep_supervision"]:
         train_transforms_list.append(AddMultiScaleLabelsd(keys=["label"], levels=5))
 
     train_transforms = Compose(train_transforms_list)
