@@ -4,6 +4,7 @@ import argparse
 import json
 import logging
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import matplotlib
@@ -37,7 +38,11 @@ from scripts.utils.model import load_model_weights, resolve_checkpoint_path
 from scripts.utils.output import save_prediction
 from scripts.utils.transforms import build_postprocess_transform, ConvertToMultiChannelMSDd
 from scripts.utils.tta import get_tta_variant_count, tta_sliding_window_inference
-from scripts.utils.visualization import log_inference_example, plot_inference_summary
+from scripts.utils.visualization import (
+    log_inference_example,
+    plot_dice_summary,
+    plot_hd95_summary,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -273,7 +278,7 @@ def run_inference(args: argparse.Namespace) -> pd.DataFrame:
     logger.info("Saved per-case results to %s", results_path)
 
     if with_labels:
-        summary = {
+        metrics = {
             metric: float(results[metric].mean())
             for metric in [
                 "mean_dice", "dice_wt", "dice_tc", "dice_et",
@@ -281,39 +286,70 @@ def run_inference(args: argparse.Namespace) -> pd.DataFrame:
             ]
             if metric in results
         }
+        summary = {
+            "metadata": {
+                "model_name": config["model_name"],
+                "dataset": args.dataset,
+                "fold": args.fold,
+                "num_cases": len(results),
+                "checkpoint": str(args.checkpoint) if args.checkpoint is not None else None,
+                "clearml_model_id": args.clearml_model_id,
+                "config": {
+                    "img_size": config.get("img_size"),
+                    "sw_batch_size": config.get("sw_batch_size"),
+                    "tta": args.tta,
+                    "postprocess": args.postprocess,
+                    "threshold": args.threshold,
+                    "overlap": args.overlap,
+                    "overlap_mode": args.overlap_mode,
+                },
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
+            "metrics": metrics,
+        }
         summary_path = output_dir / "inference_summary.json"
         with open(summary_path, "w") as f:
             json.dump(summary, f, indent=2)
-        logger.info("Mean external metrics: %s", summary)
+        logger.info("Mean external metrics: %s", metrics)
         logger.info("Saved summary to %s", summary_path)
 
         if clearml_logger is not None:
-            for metric_name, metric_value in summary.items():
+            for metric_name, metric_value in metrics.items():
+                title = "Inference Metrics/HD95" if metric_name.startswith("hd95") else "Inference Metrics/Dice"
                 clearml_logger.report_scalar(
-                    title="Inference Metrics",
+                    title=title,
                     series=metric_name,
                     value=metric_value,
                     iteration=0,
                 )
 
-        summary_fig = plot_inference_summary(
-            results,
-            title=f"Inference Summary: {config['model_name']} on {args.dataset}",
-        )
+        base_title = f"{config['model_name']} on {args.dataset}"
+        dice_fig = plot_dice_summary(results, title=f"Dice Summary: {base_title}")
+        hd95_fig = plot_hd95_summary(results, title=f"HD95 Summary: {base_title}")
 
         if clearml_logger is not None:
             clearml_logger.report_matplotlib_figure(
-                title="inference_summary",
-                series="summary_plot",
+                title="inference_summary/dice",
+                series="dice_summary_plot",
                 iteration=0,
-                figure=summary_fig,
+                figure=dice_fig,
+                report_image=False,
+            )
+            clearml_logger.report_matplotlib_figure(
+                title="inference_summary/hd95",
+                series="hd95_summary_plot",
+                iteration=0,
+                figure=hd95_fig,
                 report_image=False,
             )
 
-        summary_plot_path = output_dir / "inference_summary.png"
-        summary_fig.savefig(summary_plot_path, dpi=150, bbox_inches="tight")
-        plt.close(summary_fig)
-        logger.info("Saved summary plot to %s", summary_plot_path)
+        dice_plot_path = output_dir / "inference_summary_dice.png"
+        hd95_plot_path = output_dir / "inference_summary_hd95.png"
+        dice_fig.savefig(dice_plot_path, dpi=150, bbox_inches="tight")
+        hd95_fig.savefig(hd95_plot_path, dpi=150, bbox_inches="tight")
+        plt.close(dice_fig)
+        plt.close(hd95_fig)
+        logger.info("Saved summary plots to %s and %s", dice_plot_path, hd95_plot_path)
 
     return results
 
