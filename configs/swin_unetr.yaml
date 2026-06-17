@@ -1,0 +1,29 @@
+model_name: "swin_unetr"
+
+# Параметры обучения
+batch_size: 2
+max_epochs: 600
+lr: 0.0001
+weight_decay: 0.00001
+transfer_learning: true
+patience: 10
+
+# Параметры пайплайна / инференса
+img_size: [128, 128, 128]
+num_samples: 4
+
+# Параметры архитектуры
+feature_size: 48
+deep_supervision: true
+use_checkpoint: true
+norm_name: "instance"
+drop_rate: 0.0
+attn_drop_rate: 0.0
+dropout_path_rate: 0.0
+depths: [2, 2, 2, 2]
+num_heads: [3, 6, 12, 24]
+spatial_dims: 3
+normalize: true
+
+# Transfer learning
+pretrained_path: "./pretrained/model_swinvit.pt"

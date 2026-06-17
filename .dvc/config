@@ -1,0 +1,6 @@
+[core]
+    remote = p-arslanova
+['remote "p-arslanova"']
+    url = s3://p-arslanova
+    use_ssl = true
+    endpointurl = https://s3.lab.karpov.courses
