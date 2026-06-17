@@ -15,10 +15,7 @@ def _checkpoint_path(model_name, fold, is_best=True):
 
 
 def peek_task_id(path):
-    """Извлекает clearml_task_id из чекпойнта без загрузки весов модели.
-
-    Возвращает None, если файл не существует или task_id не сохранён.
-    """
+    """Извлекает clearml_task_id из чекпойнта без загрузки весов модели."""
     if not path or not Path(path).exists():
         return None
     try:
@@ -29,6 +26,54 @@ def peek_task_id(path):
     if not isinstance(checkpoint, dict):
         return None
     return checkpoint.get("clearml_task_id")
+
+
+def resolve_checkpoint_path(checkpoint_path: str | Path | None, clearml_model_id: str | None,
+                            root_dir: Path | None = None) -> Path:
+    """Resolve a checkpoint path from a local file or a ClearML model ID."""
+    if checkpoint_path is not None and clearml_model_id is not None:
+        raise ValueError("Specify either --checkpoint or --clearml_model_id, not both.")
+    if checkpoint_path is None and clearml_model_id is None:
+        raise ValueError("Either --checkpoint or --clearml_model_id must be provided.")
+
+    if checkpoint_path is not None:
+        path = Path(checkpoint_path)
+        if not path.is_absolute():
+            if root_dir is not None:
+                path = root_dir / path
+        if not path.exists():
+            raise FileNotFoundError(f"Checkpoint not found: {path}")
+        return path
+
+    # Lazy import: ClearML is only required when downloading a remote model.
+    from clearml import Model
+
+    logger.info("Downloading model %s from ClearML", clearml_model_id)
+    model_obj = Model(model_id=clearml_model_id)
+    path = model_obj.get_local_copy()
+    logger.info("Model downloaded to %s", path)
+    return Path(path)
+
+
+def load_model_weights(model: torch.nn.Module, checkpoint_path: Path, device: torch.device) -> None:
+    """Load model weights from a checkpoint file."""
+    try:
+        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    except TypeError:
+        checkpoint = torch.load(checkpoint_path, map_location=device)
+
+    if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+        state_dict = checkpoint["model_state_dict"]
+        epoch = checkpoint.get("epoch")
+        best_dice = checkpoint.get("best_dice")
+        logger.info("Loaded training checkpoint metadata: epoch=%s, best_dice=%s", epoch, best_dice)
+    elif isinstance(checkpoint, dict) and "state_dict" in checkpoint:
+        state_dict = checkpoint["state_dict"]
+    else:
+        state_dict = checkpoint
+
+    model.load_state_dict(state_dict)
+
 
 def load_pretrained_weights(model, model_name, path):
     if not Path(path).exists():
@@ -86,14 +131,7 @@ def save_checkpoint(model, config, fold, optimizer=None, scheduler=None, scaler=
 
 
 def load_checkpoint(path, model, optimizer=None, scheduler=None, scaler=None, restore_rng=True):
-    """Загрузка чекпоинта для возобновления обучения.
-    
-    Поддерживает как новый формат (dict с model_state_dict),
-    так и старый формат (только state_dict модели).
-    
-    Returns:
-        tuple: (start_epoch, best_dice) — эпоха для продолжения и лучший dice.
-    """
+    """Загрузка чекпоинта для возобновления обучения."""
     if not Path(path).exists():
         raise FileNotFoundError(f"Checkpoint not found: {path}")
     

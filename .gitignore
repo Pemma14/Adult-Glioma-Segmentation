@@ -170,3 +170,4 @@ best_model.pth
 checkpoint/
 logs/
 clearml.conf
+results/
