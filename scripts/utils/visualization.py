@@ -132,57 +132,101 @@ def log_inference_example(
     plt.close(fig)
 
 
-def plot_inference_summary(results: pd.DataFrame, title: str = "Inference Summary") -> plt.Figure:
-    """Create a summary figure with mean metrics and per-case distributions.
+def _threshold_colors(values, threshold, higher_is_better=True):
+    """Return green/red colors based on whether values pass a threshold."""
+    if higher_is_better:
+        return ["#2ca02c" if v >= threshold else "#d62728" for v in values]
+    return ["#2ca02c" if v <= threshold else "#d62728" for v in values]
 
-    Args:
-        results: DataFrame produced by ``run_inference`` with metric columns.
-        title: Figure title.
 
-    Returns:
-        Matplotlib figure with four subplots:
-        - mean Dice per region,
-        - mean HD95 per region,
-        - Dice distribution per region,
-        - mean Dice vs mean HD95 per case.
+def plot_dice_summary(results: pd.DataFrame, title: str = "Dice Summary") -> plt.Figure:
+    """Create an informative summary figure for Dice metrics.
+
+    Includes:
+    - mean Dice per region with a clinical threshold line,
+    - per-case sorted mean Dice to quickly spot failing cases.
     """
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-
     dice_cols = ["dice_wt", "dice_tc", "dice_et"]
-    hd95_cols = ["hd95_wt", "hd95_tc", "hd95_et"]
     region_labels = ["WT", "TC", "ET"]
+    dice_threshold = 0.8
 
-    # Mean Dice per region
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
     if all(col in results for col in dice_cols):
         mean_dice = results[dice_cols].mean()
-        axes[0, 0].bar(region_labels, mean_dice.values, color=["#1f77b4", "#ff7f0e", "#2ca02c"])
-        axes[0, 0].set_ylim(0, 1)
-        axes[0, 0].set_ylabel("Mean Dice")
-        axes[0, 0].set_title("Mean Dice by Region")
+        axes[0].bar(
+            region_labels,
+            mean_dice.values,
+            color=_threshold_colors(mean_dice.values, dice_threshold, higher_is_better=True),
+        )
+        axes[0].axhline(dice_threshold, color="black", linestyle="--", linewidth=1, label=f"threshold = {dice_threshold}")
+        axes[0].set_ylim(0, 1)
+        axes[0].set_ylabel("Mean Dice")
+        axes[0].set_title("Mean Dice by Region")
+        axes[0].legend()
 
-    # Mean HD95 per region
-    if all(col in results for col in hd95_cols):
-        mean_hd95 = results[hd95_cols].mean()
-        axes[0, 1].bar(region_labels, mean_hd95.values, color=["#1f77b4", "#ff7f0e", "#2ca02c"])
-        axes[0, 1].set_ylabel("Mean HD95")
-        axes[0, 1].set_title("Mean HD95 by Region")
-
-    # Dice distribution
-    if all(col in results for col in dice_cols):
-        results[dice_cols].boxplot(ax=axes[1, 0])
-        axes[1, 0].set_xticklabels(region_labels)
-        axes[1, 0].set_ylabel("Dice")
-        axes[1, 0].set_ylim(0, 1)
-        axes[1, 0].set_title("Dice Distribution per Region")
-
-    # Dice vs HD95 per case
-    if "mean_dice" in results and "mean_hd95" in results:
-        axes[1, 1].scatter(results["mean_hd95"], results["mean_dice"], alpha=0.6, edgecolors="k")
-        axes[1, 1].set_xlabel("Mean HD95")
-        axes[1, 1].set_ylabel("Mean Dice")
-        axes[1, 1].set_title("Mean Dice vs Mean HD95 per Case")
-        axes[1, 1].set_ylim(0, 1)
+    if "mean_dice" in results:
+        sorted_results = results.sort_values("mean_dice").reset_index(drop=True)
+        n_cases = len(sorted_results)
+        show_n = min(n_cases, 30)
+        show_df = sorted_results.head(show_n) if show_n < n_cases else sorted_results
+        colors = _threshold_colors(show_df["mean_dice"].values, dice_threshold, higher_is_better=True)
+        axes[1].bar(range(show_n), show_df["mean_dice"].values, color=colors)
+        axes[1].axhline(dice_threshold, color="black", linestyle="--", linewidth=1, label=f"threshold = {dice_threshold}")
+        axes[1].set_ylim(0, 1)
+        axes[1].set_ylabel("Mean Dice")
+        axes[1].set_xlabel("Case (sorted)")
+        axes[1].set_title(f"Per-case Mean Dice (worst {show_n} of {n_cases})" if show_n < n_cases else "Per-case Mean Dice")
+        axes[1].set_xticks([])
+        axes[1].legend()
 
     fig.suptitle(title, fontsize=14, fontweight="bold")
     plt.tight_layout(rect=[0, 0, 1, 0.96])
     return fig
+
+
+def plot_hd95_summary(results: pd.DataFrame, title: str = "HD95 Summary") -> plt.Figure:
+    """Create an informative summary figure for HD95 metrics.
+
+    Includes:
+    - mean HD95 per region with a clinical threshold line,
+    - per-case sorted mean HD95 to quickly spot failing cases.
+    """
+    hd95_cols = ["hd95_wt", "hd95_tc", "hd95_et"]
+    region_labels = ["WT", "TC", "ET"]
+    hd95_threshold = 5.0
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+    if all(col in results for col in hd95_cols):
+        mean_hd95 = results[hd95_cols].mean()
+        axes[0].bar(
+            region_labels,
+            mean_hd95.values,
+            color=_threshold_colors(mean_hd95.values, hd95_threshold, higher_is_better=False),
+        )
+        axes[0].axhline(hd95_threshold, color="black", linestyle="--", linewidth=1, label=f"threshold = {hd95_threshold}")
+        axes[0].set_ylabel("Mean HD95")
+        axes[0].set_title("Mean HD95 by Region")
+        axes[0].legend()
+
+    if "mean_hd95" in results:
+        sorted_results = results.sort_values("mean_hd95", ascending=False).reset_index(drop=True)
+        n_cases = len(sorted_results)
+        show_n = min(n_cases, 30)
+        show_df = sorted_results.head(show_n) if show_n < n_cases else sorted_results
+        colors = _threshold_colors(show_df["mean_hd95"].values, hd95_threshold, higher_is_better=False)
+        axes[1].bar(range(show_n), show_df["mean_hd95"].values, color=colors)
+        axes[1].axhline(hd95_threshold, color="black", linestyle="--", linewidth=1, label=f"threshold = {hd95_threshold}")
+        axes[1].set_ylabel("Mean HD95")
+        axes[1].set_xlabel("Case (sorted)")
+        axes[1].set_title(f"Per-case Mean HD95 (worst {show_n} of {n_cases})" if show_n < n_cases else "Per-case Mean HD95")
+        axes[1].set_xticks([])
+        axes[1].legend()
+
+    fig.suptitle(title, fontsize=14, fontweight="bold")
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    return fig
+
+
+
