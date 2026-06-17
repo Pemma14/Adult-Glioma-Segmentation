@@ -1,25 +1,28 @@
 import torch
 from monai.transforms import (
+    Activations,
     Compose,
     CropForegroundd,
-    LoadImaged,
-    Orientationd,
-    RandFlipd,
-    RandCropByPosNegLabeld,
-    Spacingd,
-    MapTransform,
-    ToTensord,
-    NormalizeIntensityd,
     EnsureChannelFirstd,
-    SpatialPadd,
+    KeepLargestConnectedComponent,
+    Lambda,
+    LoadImaged,
+    MapTransform,
+    NormalizeIntensityd,
+    Orientationd,
     Rand3DElasticd,
     RandAdjustContrastd,
     RandAffined,
+    RandCropByPosNegLabeld,
+    RandFlipd,
     RandGaussianNoised,
     RandGaussianSmoothd,
     RandScaleIntensityd,
     RandShiftIntensityd,
     RandSimulateLowResolutiond,
+    Spacingd,
+    SpatialPadd,
+    ToTensord,
 )
 
 class ConvertToMultiChannelMSDd(MapTransform):
@@ -164,3 +167,18 @@ def get_transforms(config):
         ToTensord(keys=["image", "label"]),
     ])
     return train_transforms, val_transforms
+
+
+def build_postprocess_transform(postprocess_mode: str, threshold: float) -> Compose | None:
+    """Build a MONAI post-processing transform for region logits."""
+    if postprocess_mode == "none":
+        return None
+    if postprocess_mode == "largest_cc":
+        return Compose(
+            [
+                Activations(sigmoid=True),
+                Lambda(func=lambda x: (x > threshold).to(x.dtype)),
+                KeepLargestConnectedComponent(applied_labels=[0, 1, 2], independent=True),
+            ]
+        )
+    raise ValueError(f"Unknown postprocess mode: {postprocess_mode}")
