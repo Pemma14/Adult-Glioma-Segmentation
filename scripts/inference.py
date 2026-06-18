@@ -115,9 +115,28 @@ def _prob_to_logit(probs: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
     return torch.log(probs / (1.0 - probs))
 
 
-def ensemble_sliding_window_inference(
+def _load_ensemble_models(
     checkpoint_paths: list[Path],
     config: dict,
+    device: torch.device,
+) -> list[torch.nn.Module]:
+    """Load all ensemble models into memory once.
+
+    This is the default mode: models stay loaded for the whole inference loop,
+    avoiding repeated state_dict loads per case.
+    """
+    model_name = config["model_name"]
+    models: list[torch.nn.Module] = []
+    for cp_path in checkpoint_paths:
+        logger.info("Loading ensemble member: %s", cp_path)
+        model = get_model(model_name, config).to(device)
+        load_model_weights(model, cp_path, device, model_name=model_name)
+        model.eval()
+        models.append(model)
+    return models
+
+
+def ensemble_sliding_window_inference(
     inputs: torch.Tensor,
     device: torch.device,
     roi_size: tuple[int, ...],
@@ -126,20 +145,37 @@ def ensemble_sliding_window_inference(
     overlap_mode: str,
     tta_mode: str,
     use_amp: bool,
+    models: list[torch.nn.Module] | None = None,
+    checkpoint_paths: list[Path] | None = None,
+    config: dict | None = None,
     ensemble_weights: list[float] | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Run inference with an ensemble of models and return mean logits + uncertainty.
 
-    Models are evaluated sequentially to keep GPU memory bounded by a single
-    model.  Mean probabilities across the ensemble are converted back to logits
-    so that existing post-processing transforms (sigmoid + threshold) keep
-    working.  Uncertainty is estimated as the average standard deviation of
-    class probabilities across ensemble members (inter-model disagreement).
+    Accepts either a list of already-loaded ``models`` (fast, default in the
+    inference script) or ``checkpoint_paths`` (loads models sequentially inside
+    this call, useful for low-memory mode).
+
+    Mean probabilities across the ensemble are converted back to logits so that
+    existing post-processing transforms (sigmoid + threshold) keep working.
+    Uncertainty is estimated as the average standard deviation of class
+    probabilities across ensemble members (inter-model disagreement).
     """
-    model_name = config["model_name"]
-    n_models = len(checkpoint_paths)
+    if models is not None and checkpoint_paths is not None:
+        raise ValueError("Specify either models or checkpoint_paths, not both.")
+    if models is None and checkpoint_paths is None:
+        raise ValueError("Either models or checkpoint_paths must be provided.")
+
+    unload_after = False
+    if models is None:
+        if config is None:
+            raise ValueError("config is required when loading from checkpoint_paths.")
+        models = _load_ensemble_models(checkpoint_paths, config, device)
+        unload_after = True
+
+    n_models = len(models)
     if n_models == 0:
-        raise ValueError("At least one ensemble checkpoint is required.")
+        raise ValueError("At least one ensemble model is required.")
 
     if ensemble_weights is None:
         weights = torch.ones(n_models, dtype=torch.float32, device=device) / n_models
@@ -147,19 +183,14 @@ def ensemble_sliding_window_inference(
         if len(ensemble_weights) != n_models:
             raise ValueError(
                 f"Number of ensemble weights ({len(ensemble_weights)}) must match "
-                f"number of checkpoints ({n_models})."
+                f"number of models ({n_models})."
             )
         weights = torch.tensor(ensemble_weights, dtype=torch.float32, device=device)
         weights = weights / weights.sum()
 
     all_probs: list[torch.Tensor] = []
 
-    for cp_path in checkpoint_paths:
-        logger.info("Ensemble member inference: %s", cp_path)
-        model = get_model(model_name, config).to(device)
-        load_model_weights(model, cp_path, device, model_name=model_name)
-        model.eval()
-
+    for model in models:
         with torch.no_grad():
             logits = tta_sliding_window_inference(
                 inputs,
@@ -176,7 +207,9 @@ def ensemble_sliding_window_inference(
                 logits = logits[0]
             all_probs.append(torch.sigmoid(logits))
 
-        del model
+    if unload_after:
+        for model in models:
+            del model
         if device.type == "cuda":
             torch.cuda.empty_cache()
 
@@ -335,6 +368,13 @@ def run_inference(args: argparse.Namespace) -> pd.DataFrame:
             logger.info("Using explicit ensemble weights: %s", ensemble_weights)
         else:
             ensemble_weights = None
+
+        if args.ensemble_low_memory:
+            ensemble_models: list[torch.nn.Module] | None = None
+            logger.info("Ensemble low-memory mode enabled: models will be loaded per case.")
+        else:
+            ensemble_models = _load_ensemble_models(ensemble_checkpoint_paths, config, device)
+            logger.info("Loaded %d ensemble models into memory.", len(ensemble_models))
     else:
         checkpoint_path = resolve_checkpoint_path(args.checkpoint, args.clearml_model_id, root_dir=ROOT_DIR)
         model = get_model(config["model_name"], config).to(device)
@@ -392,19 +432,33 @@ def run_inference(args: argparse.Namespace) -> pd.DataFrame:
             image_path = batch["image_path"][0]
 
             if use_ensemble:
-                logits, uncertainty = ensemble_sliding_window_inference(
-                    checkpoint_paths=ensemble_checkpoint_paths,
-                    config=config,
-                    inputs=inputs,
-                    device=device,
-                    roi_size=roi_size,
-                    sw_batch_size=sw_batch_size,
-                    overlap=args.overlap,
-                    overlap_mode=args.overlap_mode,
-                    tta_mode=args.tta,
-                    use_amp=use_amp,
-                    ensemble_weights=ensemble_weights,
-                )
+                if args.ensemble_low_memory:
+                    logits, uncertainty = ensemble_sliding_window_inference(
+                        inputs=inputs,
+                        device=device,
+                        roi_size=roi_size,
+                        sw_batch_size=sw_batch_size,
+                        overlap=args.overlap,
+                        overlap_mode=args.overlap_mode,
+                        tta_mode=args.tta,
+                        use_amp=use_amp,
+                        checkpoint_paths=ensemble_checkpoint_paths,
+                        config=config,
+                        ensemble_weights=ensemble_weights,
+                    )
+                else:
+                    logits, uncertainty = ensemble_sliding_window_inference(
+                        inputs=inputs,
+                        device=device,
+                        roi_size=roi_size,
+                        sw_batch_size=sw_batch_size,
+                        overlap=args.overlap,
+                        overlap_mode=args.overlap_mode,
+                        tta_mode=args.tta,
+                        use_amp=use_amp,
+                        models=ensemble_models,
+                        ensemble_weights=ensemble_weights,
+                    )
                 if not args.save_uncertainty:
                     uncertainty = None
             elif args.save_uncertainty:
@@ -468,6 +522,14 @@ def run_inference(args: argparse.Namespace) -> pd.DataFrame:
 
             rows.append(row)
 
+    if use_ensemble and ensemble_models is not None:
+        logger.info("Unloading ensemble models from memory.")
+        for model in ensemble_models:
+            del model
+        ensemble_models = None
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
+
     results = pd.DataFrame(rows)
     results_path = output_dir / "inference_metrics.csv"
     results.to_csv(results_path, index=False)
@@ -495,6 +557,7 @@ def run_inference(args: argparse.Namespace) -> pd.DataFrame:
                     "checkpoints": [str(p) for p in ensemble_checkpoint_paths] if use_ensemble else None,
                     "weights": ensemble_weights if use_ensemble else None,
                     "weight_by_dice": args.ensemble_weight_by_dice if use_ensemble else False,
+                    "low_memory": args.ensemble_low_memory if use_ensemble else False,
                     "clearml_model_ids": args.ensemble_clearml_model_ids if use_ensemble else None,
                 },
                 "config": {
@@ -571,48 +634,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--base_config", type=str, default="configs/base.yaml", help="Path to base config")
     parser.add_argument("--config", type=str, default="configs/swin_unetr.yaml", help="Path to model config")
     parser.add_argument("--checkpoint", type=str, default=None, help="Path to best model checkpoint")
-    parser.add_argument("--clearml_model_id", type=str, default=None,
-                        help="ClearML model ID to download; also initializes a ClearML inference task")
-    parser.add_argument(
-        "--ensemble_checkpoints",
-        nargs="+",
-        default=None,
-        help="List of checkpoint paths for ensemble inference (mutually exclusive with --checkpoint and --ensemble_folds)",
-    )
-    parser.add_argument(
-        "--ensemble_folds",
-        type=str,
-        default=None,
-        help="Comma-separated fold indices for ensemble inference, e.g. '0,1,2,3,4'. "
-             "Checkpoints are auto-resolved as best_model_<model>_fold<N>.pth.",
-    )
-    parser.add_argument(
-        "--ensemble_weights",
-        type=float,
-        nargs="+",
-        default=None,
-        help="Optional per-checkpoint weights for weighted ensemble averaging. "
-             "If omitted, equal weights are used.",
-    )
-    parser.add_argument(
-        "--ensemble_weight_by_dice",
-        action="store_true",
-        help="Automatically weight ensemble members by their stored best validation Dice. "
-             "Mutually exclusive with --ensemble_weights.",
-    )
-    parser.add_argument(
-        "--ensemble_clearml_model_ids",
-        nargs="+",
-        default=None,
-        help="List of ClearML model IDs for ensemble inference. "
-             "Mutually exclusive with --checkpoint, --clearml_model_id, --ensemble_checkpoints and --ensemble_folds.",
-    )
-    parser.add_argument("--clearml_debug_samples", action="store_true",
-                        help="Log per-case inference examples as debug samples in ClearML")
-    parser.add_argument("--clearml_project", type=str, default="AdultGliomaSegmentation",
-                        help="ClearML project name for the inference task")
-    parser.add_argument("--clearml_task_name", type=str, default=None,
-                        help="ClearML task name for the inference task (auto-generated if not set)")
+    parser.add_argument("--clearml_model_id", type=str, default=None, help="ClearML model ID to download; also initializes a ClearML inference task")
+    parser.add_argument("--ensemble_checkpoints", nargs="+", default=None, help="List of checkpoint paths for ensemble inference (mutually exclusive with --checkpoint and --ensemble_folds)",)
+    parser.add_argument("--ensemble_folds", type=str, default=None, help="Comma-separated fold indices for ensemble inference, e.g. '0,1,2,3,4'. " "Checkpoints are auto-resolved as best_model_<model>_fold<N>.pth.",)
+    parser.add_argument("--ensemble_weights", type=float, nargs="+", default=None, help="Optional per-checkpoint weights for weighted ensemble averaging. " "If omitted, equal weights are used.",)
+    parser.add_argument("--ensemble_weight_by_dice", action="store_true", help="Automatically weight ensemble members by their stored best validation Dice. " "Mutually exclusive with --ensemble_weights.",)
+    parser.add_argument("--ensemble_low_memory", action="store_true", help="Load ensemble models sequentially for each case instead of keeping all in memory. " "Slower, but useful when GPU memory is insufficient for all models.",)
+    parser.add_argument("--ensemble_clearml_model_ids", nargs="+", default=None, help="List of ClearML model IDs for ensemble inference. " "Mutually exclusive with --checkpoint, --clearml_model_id, --ensemble_checkpoints and --ensemble_folds.",)
+    parser.add_argument("--clearml_debug_samples", action="store_true", help="Log per-case inference examples as debug samples in ClearML")
+    parser.add_argument("--clearml_project", type=str, default="AdultGliomaSegmentation", help="ClearML project name for the inference task")
+    parser.add_argument("--clearml_task_name", type=str, default=None, help="ClearML task name for the inference task (auto-generated if not set)")
     parser.add_argument("--metadata", type=str, default="data/processed/metadata.csv", help="Path to metadata.csv")
     parser.add_argument("--data_dir", type=str, default="data/processed", help="Processed data root")
     parser.add_argument("--dataset", type=str, default="UPENN-GBM", help="Dataset name from metadata.csv")
@@ -623,44 +654,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sw_batch_size", type=int, default=None, help="Override sliding-window batch size; use 1 if CUDA OOM")
     parser.add_argument("--threshold", type=float, default=0.5, help="Sigmoid threshold for region masks")
     parser.add_argument("--overlap", type=float, default=0.5, help="Sliding-window overlap")
-    parser.add_argument(
-        "--overlap_mode",
-        type=str,
-        default="gaussian",
-        choices=["constant", "gaussian", "blend"],
-        help="Patch aggregation mode: constant=uniform averaging, gaussian=center-weighted, blend=gaussian+border",
-    )
-    parser.add_argument(
-        "--tta",
-        type=str,
-        default="none",
-        choices=["none", "flips", "full", "rot90"],
-        help=(
-            "Test-time augmentation: none / flips (4 variants: original + 3 single-axis flips) / "
-            "full (8 variants) / rot90 (4 axial 90-degree rotations)"
-        ),
-    )
-    parser.add_argument(
-        "--postprocess",
-        type=str,
-        default="none",
-        choices=["none", "largest_cc"],
-        help=(
-            "Post-processing for region predictions: none / largest_cc "
-            "(sigmoid + threshold + KeepLargestConnectedComponent per region)"
-        ),
-    )
+    parser.add_argument("--overlap_mode", type=str, default="gaussian", choices=["constant", "gaussian", "blend"], help="Patch aggregation mode: constant=uniform averaging, gaussian=center-weighted, blend=gaussian+border",)
+    parser.add_argument("--tta", type=str, default="none", choices=["none", "flips", "full", "rot90"], help= ("Test-time augmentation: none / flips (4 variants: original + 3 single-axis flips) / " "full (8 variants) / rot90 (4 axial 90-degree rotations)" ),)
+    parser.add_argument("--postprocess", type=str, default="none", choices=["none", "largest_cc"], help=("Post-processing for region predictions: none / largest_cc " "(sigmoid + threshold + KeepLargestConnectedComponent per region)"),)
     parser.add_argument("--device", type=str, default="auto", help="auto, cuda, cpu, or a torch device string")
     parser.add_argument("--num_workers", type=int, default=2, help="DataLoader workers")
     parser.add_argument("--no_amp", action="store_true", help="Disable mixed precision on CUDA")
     parser.add_argument("--no_labels", action="store_true", help="Run inference without labels and skip metrics")
     parser.add_argument("--no_save_nifti", action="store_true", help="Do not save NIfTI predictions")
     parser.add_argument("--save_regions", action="store_true", help="Additionally save 4D WT/TC/ET binary region predictions")
-    parser.add_argument(
-        "--save_uncertainty",
-        action="store_true",
-        help="Save a TTA-based voxel-wise uncertainty map as {case_id}_uncertainty.nii.gz",
-    )
+    parser.add_argument("--save_uncertainty", action="store_true", help="Save a TTA-based voxel-wise uncertainty map as {case_id}_uncertainty.nii.gz",)
     return parser.parse_args()
 
 
