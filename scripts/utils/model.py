@@ -9,6 +9,38 @@ from clearml import Task
 logger = logging.getLogger(__name__)
 
 
+# Mapping from the Python class name used in this project to the model_name
+# configured in YAML files.
+_CLASS_TO_MODEL_NAME = {
+    "BaselineUNet": "unet3d",
+    "SwinUNETR": "swin_unetr",
+    "SwinDER3D": "swin_der",
+}
+
+
+def _model_arch_name(model: nn.Module) -> str:
+    """Return the model_name string that corresponds to the given module."""
+    return _CLASS_TO_MODEL_NAME.get(model.__class__.__name__, model.__class__.__name__)
+
+
+def _detect_architecture_from_state_dict(state_dict: dict) -> str | None:
+    """
+    Infer the family of a checkpoint from its state_dict keys.
+
+    Returns ``"unet3d"`` for plain MONAI UNet checkpoints or ``"swin"`` for
+    any Swin-based architecture (SwinUNETR / SwinDER).  ``None`` means the
+    architecture could not be determined.
+    """
+    if not state_dict:
+        return None
+    first_key = next(iter(state_dict))
+    if first_key.startswith("model.model."):
+        return "unet3d"
+    if first_key.startswith(("swinViT.", "encoder", "decoder", "out")):
+        return "swin"
+    return None
+
+
 def _checkpoint_path(model_name, fold, is_best=True):
     prefix = "best" if is_best else "last"
     return f"{prefix}_model_{model_name}_fold{fold}.pth"
@@ -55,22 +87,62 @@ def resolve_checkpoint_path(checkpoint_path: str | Path | None, clearml_model_id
     return Path(path)
 
 
-def load_model_weights(model: torch.nn.Module, checkpoint_path: Path, device: torch.device) -> None:
-    """Load model weights from a checkpoint file."""
+def load_model_weights(
+    model: torch.nn.Module,
+    checkpoint_path: Path,
+    device: torch.device,
+    model_name: str | None = None,
+) -> None:
+    """Load model weights from a checkpoint file.
+
+    Performs a lightweight architecture sanity check so that a mismatch
+    between a Swin checkpoint and a UNet model (or vice versa) produces an
+    actionable error instead of a long PyTorch state_dict diff.
+    """
     try:
         checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     except TypeError:
         checkpoint = torch.load(checkpoint_path, map_location=device)
 
-    if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
-        state_dict = checkpoint["model_state_dict"]
-        epoch = checkpoint.get("epoch")
-        best_dice = checkpoint.get("best_dice")
-        logger.info("Loaded training checkpoint metadata: epoch=%s, best_dice=%s", epoch, best_dice)
-    elif isinstance(checkpoint, dict) and "state_dict" in checkpoint:
-        state_dict = checkpoint["state_dict"]
+    if isinstance(checkpoint, dict):
+        checkpoint_model_name = checkpoint.get("model_name")
+        if checkpoint_model_name is not None and model_name is not None and checkpoint_model_name != model_name:
+            raise RuntimeError(
+                f"Checkpoint was trained with model '{checkpoint_model_name}', "
+                f"but the current config uses model '{model_name}'. "
+                f"Use the matching config, e.g. --config configs/{checkpoint_model_name}.yaml."
+            )
+
+        if "model_state_dict" in checkpoint:
+            state_dict = checkpoint["model_state_dict"]
+            epoch = checkpoint.get("epoch")
+            best_dice = checkpoint.get("best_dice")
+            logger.info("Loaded training checkpoint metadata: epoch=%s, best_dice=%s", epoch, best_dice)
+        elif "state_dict" in checkpoint:
+            state_dict = checkpoint["state_dict"]
+        else:
+            state_dict = checkpoint
     else:
         state_dict = checkpoint
+
+    checkpoint_arch = _detect_architecture_from_state_dict(state_dict)
+    model_arch = _model_arch_name(model)
+    if checkpoint_arch is not None and model_arch != checkpoint_arch:
+        # "swin" is the broad family for SwinUNETR / SwinDER; only raise a
+        # specific mismatch when one side is the plain UNet3D.
+        if checkpoint_arch == "unet3d" or model_arch == "unet3d":
+            raise RuntimeError(
+                f"Architecture mismatch: checkpoint looks like '{checkpoint_arch}', "
+                f"but the model built from config is '{model_arch}'. "
+                f"Did you pass the wrong --config? For a '{checkpoint_arch}' checkpoint use "
+                f"--config configs/{checkpoint_arch}.yaml."
+            )
+        logger.warning(
+            "Checkpoint architecture ('%s') may differ from the configured model ('%s'). "
+            "If loading fails, check that --config matches the checkpoint.",
+            checkpoint_arch,
+            model_arch,
+        )
 
     model.load_state_dict(state_dict)
 
@@ -100,6 +172,7 @@ def save_checkpoint(model, config, fold, optimizer=None, scheduler=None, scaler=
     prefix = "best" if is_best else "last"
     save_path = _checkpoint_path(config["model_name"], fold, is_best=is_best)
     checkpoint = {
+        "model_name": config["model_name"],
         "model_state_dict": model.state_dict(),
         "epoch": epoch,
         "best_dice": best_dice,
