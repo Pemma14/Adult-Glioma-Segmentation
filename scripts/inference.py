@@ -34,8 +34,13 @@ if str(ROOT_DIR) not in sys.path:
 from models import get_model
 from scripts.utils.config_schema import validate_config, get_required_inference_keys
 from scripts.utils.metrics import compute_dice_per_region, compute_hd95_per_region
-from scripts.utils.model import load_model_weights, resolve_checkpoint_path
-from scripts.utils.output import save_prediction
+from scripts.utils.model import (
+    load_model_weights,
+    resolve_checkpoint_path,
+    resolve_ensemble_paths,
+    get_checkpoint_best_dice,
+)
+from scripts.utils.output import save_prediction, save_uncertainty_map
 from scripts.utils.transforms import build_postprocess_transform, ConvertToMultiChannelMSDd
 from scripts.utils.tta import get_tta_variant_count, tta_sliding_window_inference
 from scripts.utils.visualization import (
@@ -102,6 +107,88 @@ def get_inference_transforms(config: dict, with_labels: bool) -> Compose:
         ]
     )
     return Compose(transforms)
+
+
+def _prob_to_logit(probs: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+    """Convert probabilities back to logits for compatibility with post-processing."""
+    probs = probs.clamp(min=eps, max=1.0 - eps)
+    return torch.log(probs / (1.0 - probs))
+
+
+def ensemble_sliding_window_inference(
+    checkpoint_paths: list[Path],
+    config: dict,
+    inputs: torch.Tensor,
+    device: torch.device,
+    roi_size: tuple[int, ...],
+    sw_batch_size: int,
+    overlap: float,
+    overlap_mode: str,
+    tta_mode: str,
+    use_amp: bool,
+    ensemble_weights: list[float] | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Run inference with an ensemble of models and return mean logits + uncertainty.
+
+    Models are evaluated sequentially to keep GPU memory bounded by a single
+    model.  Mean probabilities across the ensemble are converted back to logits
+    so that existing post-processing transforms (sigmoid + threshold) keep
+    working.  Uncertainty is estimated as the average standard deviation of
+    class probabilities across ensemble members (inter-model disagreement).
+    """
+    model_name = config["model_name"]
+    n_models = len(checkpoint_paths)
+    if n_models == 0:
+        raise ValueError("At least one ensemble checkpoint is required.")
+
+    if ensemble_weights is None:
+        weights = torch.ones(n_models, dtype=torch.float32, device=device) / n_models
+    else:
+        if len(ensemble_weights) != n_models:
+            raise ValueError(
+                f"Number of ensemble weights ({len(ensemble_weights)}) must match "
+                f"number of checkpoints ({n_models})."
+            )
+        weights = torch.tensor(ensemble_weights, dtype=torch.float32, device=device)
+        weights = weights / weights.sum()
+
+    all_probs: list[torch.Tensor] = []
+
+    for cp_path in checkpoint_paths:
+        logger.info("Ensemble member inference: %s", cp_path)
+        model = get_model(model_name, config).to(device)
+        load_model_weights(model, cp_path, device, model_name=model_name)
+        model.eval()
+
+        with torch.no_grad():
+            logits = tta_sliding_window_inference(
+                inputs,
+                roi_size=roi_size,
+                sw_batch_size=sw_batch_size,
+                predictor=model,
+                overlap=overlap,
+                overlap_mode=overlap_mode,
+                tta_mode=tta_mode,
+                use_amp=use_amp,
+                return_uncertainty=False,
+            )
+            if isinstance(logits, (list, tuple)):
+                logits = logits[0]
+            all_probs.append(torch.sigmoid(logits))
+
+        del model
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
+
+    stacked_probs = torch.stack(all_probs, dim=0)  # (M, B, C, D, H, W)
+    weights_view = weights.view(-1, 1, 1, 1, 1, 1)
+    mean_probs = (stacked_probs * weights_view).sum(dim=0)  # (B, C, D, H, W)
+    mean_logits = _prob_to_logit(mean_probs)
+
+    # Inter-model disagreement averaged over classes.
+    uncertainty = torch.std(stacked_probs, dim=0, unbiased=False).mean(dim=1)  # (B, D, H, W)
+
+    return mean_logits, uncertainty
 
 
 def build_cases(args: argparse.Namespace) -> tuple[list[dict], bool]:
@@ -190,6 +277,70 @@ def run_inference(args: argparse.Namespace) -> pd.DataFrame:
     device = torch.device(args.device if args.device != "auto" else ("cuda" if torch.cuda.is_available() else "cpu"))
     logger.info("Using device: %s", device)
 
+    # Resolve single vs ensemble checkpoint configuration.
+    use_ensemble = (
+        args.ensemble_checkpoints is not None
+        or args.ensemble_folds is not None
+        or args.ensemble_clearml_model_ids is not None
+    )
+    if use_ensemble and (args.checkpoint is not None or args.clearml_model_id is not None):
+        raise ValueError(
+            "Ensemble inference (--ensemble_checkpoints, --ensemble_folds or --ensemble_clearml_model_ids) "
+            "is mutually exclusive with --checkpoint and --clearml_model_id."
+        )
+
+    ensemble_checkpoint_paths: list[Path] | None = None
+    ensemble_weights: list[float] | None = None
+    if use_ensemble:
+        fold_indices = None
+        if args.ensemble_folds is not None:
+            fold_indices = [int(f.strip()) for f in args.ensemble_folds.split(",")]
+        ensemble_checkpoint_paths = resolve_ensemble_paths(
+            checkpoint_paths=args.ensemble_checkpoints,
+            fold_indices=fold_indices,
+            clearml_model_ids=args.ensemble_clearml_model_ids,
+            model_name=config["model_name"],
+            root_dir=ROOT_DIR,
+            is_best=True,
+        )
+        logger.info(
+            "Ensemble inference with %d checkpoints: %s",
+            len(ensemble_checkpoint_paths),
+            [str(p) for p in ensemble_checkpoint_paths],
+        )
+
+        if args.ensemble_weights is not None and args.ensemble_weight_by_dice:
+            raise ValueError("--ensemble_weights and --ensemble_weight_by_dice are mutually exclusive.")
+
+        if args.ensemble_weight_by_dice:
+            raw_dices = [get_checkpoint_best_dice(p, device=device) for p in ensemble_checkpoint_paths]
+            logger.info("Checkpoint best validation Dice values: %s", raw_dices)
+            valid_dices = [d if d is not None and d > 0 else 0.0 for d in raw_dices]
+            total = sum(valid_dices)
+            if total <= 0:
+                logger.warning(
+                    "Could not read positive best_dice from any checkpoint. Falling back to equal weights."
+                )
+                ensemble_weights = None
+            else:
+                ensemble_weights = [d / total for d in valid_dices]
+                logger.info("Ensemble weights derived from validation Dice: %s", ensemble_weights)
+        elif args.ensemble_weights is not None:
+            if len(args.ensemble_weights) != len(ensemble_checkpoint_paths):
+                raise ValueError(
+                    f"Number of --ensemble_weights ({len(args.ensemble_weights)}) must match "
+                    f"number of ensemble checkpoints ({len(ensemble_checkpoint_paths)})."
+                )
+            ensemble_weights = list(args.ensemble_weights)
+            logger.info("Using explicit ensemble weights: %s", ensemble_weights)
+        else:
+            ensemble_weights = None
+    else:
+        checkpoint_path = resolve_checkpoint_path(args.checkpoint, args.clearml_model_id, root_dir=ROOT_DIR)
+        model = get_model(config["model_name"], config).to(device)
+        load_model_weights(model, checkpoint_path, device, model_name=config["model_name"])
+        model.eval()
+
     cases, with_labels = build_cases(args)
     logger.info("Prepared %d cases from %s. Metrics enabled: %s", len(cases), args.dataset, with_labels)
 
@@ -203,14 +354,10 @@ def run_inference(args: argparse.Namespace) -> pd.DataFrame:
         pin_memory=device.type == "cuda",
     )
 
-    checkpoint_path = resolve_checkpoint_path(args.checkpoint, args.clearml_model_id, root_dir=ROOT_DIR)
-    model = get_model(config["model_name"], config).to(device)
-    load_model_weights(model, checkpoint_path, device, model_name=config["model_name"])
-    model.eval()
-
     output_dir = resolve_project_path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     predictions_dir = output_dir / "predictions"
+    uncertainty_dir = output_dir / "uncertainty"
 
     rows = []
     use_amp = device.type == "cuda" and not args.no_amp
@@ -218,14 +365,22 @@ def run_inference(args: argparse.Namespace) -> pd.DataFrame:
     sw_batch_size = int(config.get("sw_batch_size", 1))
     tta_count = get_tta_variant_count(args.tta)
 
+    if args.save_uncertainty and args.tta == "none" and not use_ensemble:
+        logger.warning(
+            "--save_uncertainty is set but TTA is disabled and ensemble is not used. "
+            "The uncertainty map will be all zeros."
+        )
+
     logger.info(
-        "Inference config: overlap=%.2f, overlap_mode=%s, TTA=%s (%d variants), threshold=%.2f, postprocess=%s",
+        "Inference config: overlap=%.2f, overlap_mode=%s, TTA=%s (%d variants), threshold=%.2f, postprocess=%s, save_uncertainty=%s, ensemble=%s",
         args.overlap,
         args.overlap_mode,
         args.tta,
         tta_count,
         args.threshold,
         args.postprocess,
+        args.save_uncertainty,
+        use_ensemble,
     )
 
     postprocess = build_postprocess_transform(args.postprocess, args.threshold)
@@ -236,16 +391,46 @@ def run_inference(args: argparse.Namespace) -> pd.DataFrame:
             case_id = batch["case_id"][0]
             image_path = batch["image_path"][0]
 
-            logits = tta_sliding_window_inference(
-                inputs,
-                roi_size=roi_size,
-                sw_batch_size=sw_batch_size,
-                predictor=model,
-                overlap=args.overlap,
-                overlap_mode=args.overlap_mode,
-                tta_mode=args.tta,
-                use_amp=use_amp,
-            )
+            if use_ensemble:
+                logits, uncertainty = ensemble_sliding_window_inference(
+                    checkpoint_paths=ensemble_checkpoint_paths,
+                    config=config,
+                    inputs=inputs,
+                    device=device,
+                    roi_size=roi_size,
+                    sw_batch_size=sw_batch_size,
+                    overlap=args.overlap,
+                    overlap_mode=args.overlap_mode,
+                    tta_mode=args.tta,
+                    use_amp=use_amp,
+                    ensemble_weights=ensemble_weights,
+                )
+                if not args.save_uncertainty:
+                    uncertainty = None
+            elif args.save_uncertainty:
+                logits, uncertainty = tta_sliding_window_inference(
+                    inputs,
+                    roi_size=roi_size,
+                    sw_batch_size=sw_batch_size,
+                    predictor=model,
+                    overlap=args.overlap,
+                    overlap_mode=args.overlap_mode,
+                    tta_mode=args.tta,
+                    use_amp=use_amp,
+                    return_uncertainty=True,
+                )
+            else:
+                logits = tta_sliding_window_inference(
+                    inputs,
+                    roi_size=roi_size,
+                    sw_batch_size=sw_batch_size,
+                    predictor=model,
+                    overlap=args.overlap,
+                    overlap_mode=args.overlap_mode,
+                    tta_mode=args.tta,
+                    use_amp=use_amp,
+                )
+                uncertainty = None
 
             if postprocess is not None:
                 prediction = postprocess(logits)[0].cpu().numpy().astype(np.uint8)
@@ -272,6 +457,15 @@ def run_inference(args: argparse.Namespace) -> pd.DataFrame:
             if not args.no_save_nifti:
                 row.update(save_prediction(prediction, case_id, image_path, predictions_dir, args.save_regions))
 
+            if args.save_uncertainty and uncertainty is not None:
+                uncertainty_path = save_uncertainty_map(
+                    uncertainty[0].cpu().numpy(),
+                    case_id,
+                    image_path,
+                    uncertainty_dir,
+                )
+                row["uncertainty_path"] = uncertainty_path
+
             rows.append(row)
 
     results = pd.DataFrame(rows)
@@ -296,6 +490,13 @@ def run_inference(args: argparse.Namespace) -> pd.DataFrame:
                 "num_cases": len(results),
                 "checkpoint": str(args.checkpoint) if args.checkpoint is not None else None,
                 "clearml_model_id": args.clearml_model_id,
+                "ensemble": {
+                    "enabled": use_ensemble,
+                    "checkpoints": [str(p) for p in ensemble_checkpoint_paths] if use_ensemble else None,
+                    "weights": ensemble_weights if use_ensemble else None,
+                    "weight_by_dice": args.ensemble_weight_by_dice if use_ensemble else False,
+                    "clearml_model_ids": args.ensemble_clearml_model_ids if use_ensemble else None,
+                },
                 "config": {
                     "img_size": config.get("img_size"),
                     "sw_batch_size": config.get("sw_batch_size"),
@@ -333,7 +534,8 @@ def run_inference(args: argparse.Namespace) -> pd.DataFrame:
                 table_plot=metrics_summary_df,
             )
 
-        base_title = f"{config['model_name']} on {args.dataset}"
+        ensemble_suffix = " (ensemble)" if use_ensemble else ""
+        base_title = f"{config['model_name']}{ensemble_suffix} on {args.dataset}"
         dice_fig = plot_dice_summary(results, title=f"Dice Summary: {base_title}")
         hd95_fig = plot_hd95_summary(results, title=f"HD95 Summary: {base_title}")
 
@@ -371,6 +573,40 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint", type=str, default=None, help="Path to best model checkpoint")
     parser.add_argument("--clearml_model_id", type=str, default=None,
                         help="ClearML model ID to download; also initializes a ClearML inference task")
+    parser.add_argument(
+        "--ensemble_checkpoints",
+        nargs="+",
+        default=None,
+        help="List of checkpoint paths for ensemble inference (mutually exclusive with --checkpoint and --ensemble_folds)",
+    )
+    parser.add_argument(
+        "--ensemble_folds",
+        type=str,
+        default=None,
+        help="Comma-separated fold indices for ensemble inference, e.g. '0,1,2,3,4'. "
+             "Checkpoints are auto-resolved as best_model_<model>_fold<N>.pth.",
+    )
+    parser.add_argument(
+        "--ensemble_weights",
+        type=float,
+        nargs="+",
+        default=None,
+        help="Optional per-checkpoint weights for weighted ensemble averaging. "
+             "If omitted, equal weights are used.",
+    )
+    parser.add_argument(
+        "--ensemble_weight_by_dice",
+        action="store_true",
+        help="Automatically weight ensemble members by their stored best validation Dice. "
+             "Mutually exclusive with --ensemble_weights.",
+    )
+    parser.add_argument(
+        "--ensemble_clearml_model_ids",
+        nargs="+",
+        default=None,
+        help="List of ClearML model IDs for ensemble inference. "
+             "Mutually exclusive with --checkpoint, --clearml_model_id, --ensemble_checkpoints and --ensemble_folds.",
+    )
     parser.add_argument("--clearml_debug_samples", action="store_true",
                         help="Log per-case inference examples as debug samples in ClearML")
     parser.add_argument("--clearml_project", type=str, default="AdultGliomaSegmentation",
@@ -401,7 +637,7 @@ def parse_args() -> argparse.Namespace:
         choices=["none", "flips", "full", "rot90"],
         help=(
             "Test-time augmentation: none / flips (4 variants: original + 3 single-axis flips) / "
-            "full (8 variants) / rot90 (4 axial 90-degree rotations via TestTimeRotation wrapper)"
+            "full (8 variants) / rot90 (4 axial 90-degree rotations)"
         ),
     )
     parser.add_argument(
@@ -420,6 +656,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no_labels", action="store_true", help="Run inference without labels and skip metrics")
     parser.add_argument("--no_save_nifti", action="store_true", help="Do not save NIfTI predictions")
     parser.add_argument("--save_regions", action="store_true", help="Additionally save 4D WT/TC/ET binary region predictions")
+    parser.add_argument(
+        "--save_uncertainty",
+        action="store_true",
+        help="Save a TTA-based voxel-wise uncertainty map as {case_id}_uncertainty.nii.gz",
+    )
     return parser.parse_args()
 
 
