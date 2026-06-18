@@ -171,6 +171,7 @@ def run_inference(args: argparse.Namespace) -> pd.DataFrame:
         config["sw_batch_size"] = args.sw_batch_size
 
     clearml_logger = None
+    clearml_task = None
     if args.clearml_model_id is not None or args.clearml_debug_samples:
         from clearml import Task
         task_name = args.clearml_task_name or f"inference_{config['model_name']}_{args.dataset}"
@@ -182,6 +183,7 @@ def run_inference(args: argparse.Namespace) -> pd.DataFrame:
         task.connect(config)
         if args.clearml_model_id is not None:
             task.set_parameter("inference_clearml_model_id", args.clearml_model_id)
+        clearml_task = task
         clearml_logger = task.get_logger()
         logger.info("Initialized ClearML inference task: %s", task.id)
 
@@ -203,7 +205,7 @@ def run_inference(args: argparse.Namespace) -> pd.DataFrame:
 
     checkpoint_path = resolve_checkpoint_path(args.checkpoint, args.clearml_model_id, root_dir=ROOT_DIR)
     model = get_model(config["model_name"], config).to(device)
-    load_model_weights(model, checkpoint_path, device)
+    load_model_weights(model, checkpoint_path, device, model_name=config["model_name"])
     model.eval()
 
     output_dir = resolve_project_path(args.output_dir)
@@ -313,15 +315,23 @@ def run_inference(args: argparse.Namespace) -> pd.DataFrame:
         logger.info("Mean external metrics: %s", metrics)
         logger.info("Saved summary to %s", summary_path)
 
-        if clearml_logger is not None:
-            for metric_name, metric_value in metrics.items():
-                title = "Inference Metrics/HD95" if metric_name.startswith("hd95") else "Inference Metrics/Dice"
-                clearml_logger.report_scalar(
-                    title=title,
-                    series=metric_name,
-                    value=metric_value,
-                    iteration=0,
-                )
+        if clearml_task is not None:
+            clearml_task.upload_artifact(
+                name="inference_metrics_csv",
+                artifact_object=results,
+                metadata={"num_cases": len(results)},
+            )
+            clearml_task.upload_artifact(
+                name="inference_summary_json",
+                artifact_object=summary,
+            )
+            metrics_summary_df = pd.DataFrame([metrics])
+            clearml_logger.report_table(
+                title="inference_summary/metrics_table",
+                series="metrics",
+                iteration=0,
+                table_plot=metrics_summary_df,
+            )
 
         base_title = f"{config['model_name']} on {args.dataset}"
         dice_fig = plot_dice_summary(results, title=f"Dice Summary: {base_title}")
