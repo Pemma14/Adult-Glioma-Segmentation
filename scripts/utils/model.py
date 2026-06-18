@@ -60,6 +60,73 @@ def peek_task_id(path):
     return checkpoint.get("clearml_task_id")
 
 
+def resolve_ensemble_paths(
+    checkpoint_paths: list[str | Path] | None = None,
+    fold_indices: list[int] | None = None,
+    clearml_model_ids: list[str] | None = None,
+    model_name: str | None = None,
+    root_dir: Path | None = None,
+    is_best: bool = True,
+) -> list[Path]:
+    """Resolve a list of ensemble checkpoint paths.
+
+    Supports three mutually exclusive sources:
+
+    * explicit local checkpoint paths (``--ensemble_checkpoints``);
+    * automatic discovery by fold index using the project's
+      ``best_model_<model>_fold<N>.pth`` naming convention (``--ensemble_folds``);
+    * ClearML model IDs (``--ensemble_clearml_model_ids``), which are downloaded
+      to local copies and returned as paths.
+    """
+    sources = [
+        (checkpoint_paths, "--ensemble_checkpoints"),
+        (fold_indices, "--ensemble_folds"),
+        (clearml_model_ids, "--ensemble_clearml_model_ids"),
+    ]
+    provided = [name for src, name in sources if src is not None]
+    if len(provided) > 1:
+        raise ValueError(f"Specify only one ensemble source: {', '.join(provided)}.")
+    if len(provided) == 0:
+        raise ValueError(
+            "One of --ensemble_checkpoints, --ensemble_folds, or --ensemble_clearml_model_ids "
+            "must be provided for ensemble inference."
+        )
+
+    if checkpoint_paths is not None:
+        paths: list[Path] = []
+        for cp in checkpoint_paths:
+            path = Path(cp)
+            if not path.is_absolute() and root_dir is not None:
+                path = root_dir / path
+            if not path.exists():
+                raise FileNotFoundError(f"Ensemble checkpoint not found: {path}")
+            paths.append(path)
+        return paths
+
+    if clearml_model_ids is not None:
+        paths = []
+        for model_id in clearml_model_ids:
+            paths.append(resolve_checkpoint_path(None, model_id, root_dir=root_dir))
+        return paths
+
+    # fold_indices is not None
+    if model_name is None:
+        raise ValueError("model_name is required when resolving ensemble checkpoints by fold index.")
+
+    paths = []
+    for fold in fold_indices:
+        path = Path(_checkpoint_path(model_name, fold, is_best=is_best))
+        if root_dir is not None:
+            path = root_dir / path
+        if not path.exists():
+            raise FileNotFoundError(
+                f"Ensemble checkpoint for fold {fold} not found: {path}. "
+                f"Train fold {fold} first or provide explicit paths via --ensemble_checkpoints."
+            )
+        paths.append(path)
+    return paths
+
+
 def resolve_checkpoint_path(checkpoint_path: str | Path | None, clearml_model_id: str | None,
                             root_dir: Path | None = None) -> Path:
     """Resolve a checkpoint path from a local file or a ClearML model ID."""
@@ -85,6 +152,32 @@ def resolve_checkpoint_path(checkpoint_path: str | Path | None, clearml_model_id
     path = model_obj.get_local_copy()
     logger.info("Model downloaded to %s", path)
     return Path(path)
+
+
+def get_checkpoint_best_dice(checkpoint_path: Path, device: torch.device = torch.device("cpu")) -> float | None:
+    """Read the best validation Dice stored in a checkpoint, if any.
+
+    Returns ``None`` if the checkpoint does not contain ``best_dice`` or cannot
+    be read.  This is useful for weighting ensemble members by their validation
+    performance without loading full model weights.
+    """
+    if checkpoint_path is None or not Path(checkpoint_path).exists():
+        return None
+    try:
+        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    except Exception as e:
+        logger.warning("Failed to read best_dice from %s: %s", checkpoint_path, e)
+        return None
+
+    if not isinstance(checkpoint, dict):
+        return None
+    best_dice = checkpoint.get("best_dice")
+    if best_dice is None:
+        return None
+    try:
+        return float(best_dice)
+    except (TypeError, ValueError):
+        return None
 
 
 def load_model_weights(

@@ -49,31 +49,22 @@ def apply_flip_3d(tensor: torch.Tensor, flip_config: tuple[bool, bool, bool]) ->
     return torch.flip(tensor, dims=dims)
 
 
-class TestTimeRotation:
-    """Wrap a model to perform inference over 90-degree rotations and average logits."""
+def _tta_uncertainty(stacked_logits: torch.Tensor) -> torch.Tensor:
+    """
+    Compute a per-voxel uncertainty map from stacked TTA logits.
 
-    def __init__(
-        self,
-        model: torch.nn.Module,
-        num_rotations: int = 4,
-        spatial_dims: int = 3,
-        batch_size: int = 1,
-    ) -> None:
-        self.model = model
-        self.num_rotations = num_rotations
-        self.spatial_dims = spatial_dims
-        self.batch_size = batch_size
+    Args:
+        stacked_logits: tensor of shape (V, B, C, D, H, W) where V is the
+            number of TTA variants.
 
-    def __call__(self, x: torch.Tensor) -> torch.Tensor:
-        outputs = []
-        for k in range(self.num_rotations):
-            x_rot = torch.rot90(x, k, dims=(-2, -1))
-            out = self.model(x_rot)
-            if isinstance(out, (list, tuple)):
-                out = out[0]
-            out = torch.rot90(out, -k, dims=(-2, -1))
-            outputs.append(out)
-        return torch.stack(outputs, dim=0).mean(dim=0)
+    Returns:
+        Uncertainty map of shape (B, D, H, W): average across classes of the
+        standard deviation of sigmoid probabilities across TTA variants.
+    """
+    probs = torch.sigmoid(stacked_logits)
+    # Population std across TTA variants (unbiased=False avoids NaN when V == 1).
+    std_per_class = torch.std(probs, dim=0, unbiased=False)  # (B, C, D, H, W)
+    return std_per_class.mean(dim=1)  # (B, D, H, W)
 
 
 def tta_sliding_window_inference(
@@ -85,55 +76,61 @@ def tta_sliding_window_inference(
     overlap_mode: str,
     tta_mode: str,
     use_amp: bool,
-) -> torch.Tensor:
-    """Run sliding-window inference with optional TTA and average logits."""
+    return_uncertainty: bool = False,
+) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+    """
+    Run sliding-window inference with optional TTA and average logits.
+
+    If ``return_uncertainty`` is True, also returns a voxel-wise uncertainty map
+    estimated as the average standard deviation of class probabilities across
+    TTA variants.
+    """
+    all_logits: list[torch.Tensor] = []
+
     if tta_mode == "rot90":
-        tta_model = TestTimeRotation(
-            model=predictor,
-            num_rotations=4,
-            spatial_dims=3,
-            batch_size=sw_batch_size,
-        )
-        with torch.amp.autocast("cuda", enabled=use_amp):
-            logits = sliding_window_inference(
-                inputs,
-                roi_size=roi_size,
-                sw_batch_size=sw_batch_size,
-                predictor=tta_model,
-                overlap=overlap,
-                mode=overlap_mode,
-                sigma_scale=0.125,
-            )
-        if isinstance(logits, (list, tuple)):
-            logits = logits[0]
-        return logits
+        for k in range(4):
+            x_rot = torch.rot90(inputs, k, dims=(-2, -1))
+            with torch.amp.autocast("cuda", enabled=use_amp):
+                logits = sliding_window_inference(
+                    x_rot,
+                    roi_size=roi_size,
+                    sw_batch_size=sw_batch_size,
+                    predictor=predictor,
+                    overlap=overlap,
+                    mode=overlap_mode,
+                    sigma_scale=0.125,
+                )
+            if isinstance(logits, (list, tuple)):
+                logits = logits[0]
+            logits = torch.rot90(logits, -k, dims=(-2, -1))
+            all_logits.append(logits)
+    else:
+        flip_configs = get_tta_flip_configs(tta_mode)
+        for flip_config in flip_configs:
+            flipped_inputs = apply_flip_3d(inputs, flip_config)
 
-    flip_configs = get_tta_flip_configs(tta_mode)
-    accumulated_logits: torch.Tensor | None = None
+            with torch.amp.autocast("cuda", enabled=use_amp):
+                logits = sliding_window_inference(
+                    flipped_inputs,
+                    roi_size=roi_size,
+                    sw_batch_size=sw_batch_size,
+                    predictor=predictor,
+                    overlap=overlap,
+                    mode=overlap_mode,
+                    sigma_scale=0.125,
+                )
+            if isinstance(logits, (list, tuple)):
+                logits = logits[0]
 
-    for flip_config in flip_configs:
-        flipped_inputs = apply_flip_3d(inputs, flip_config)
+            # Reverse flip to align with original orientation
+            logits = apply_flip_3d(logits, flip_config)
+            all_logits.append(logits)
 
-        with torch.amp.autocast("cuda", enabled=use_amp):
-            logits = sliding_window_inference(
-                flipped_inputs,
-                roi_size=roi_size,
-                sw_batch_size=sw_batch_size,
-                predictor=predictor,
-                overlap=overlap,
-                mode=overlap_mode,
-                sigma_scale=0.125,
-            )
-        if isinstance(logits, (list, tuple)):
-            logits = logits[0]
+    stacked_logits = torch.stack(all_logits, dim=0)  # (V, B, C, D, H, W)
+    mean_logits = stacked_logits.mean(dim=0)  # (B, C, D, H, W)
 
-        # Reverse flip to align with original orientation
-        logits = apply_flip_3d(logits, flip_config)
+    if return_uncertainty:
+        uncertainty = _tta_uncertainty(stacked_logits)
+        return mean_logits, uncertainty
 
-        if accumulated_logits is None:
-            accumulated_logits = logits
-        else:
-            accumulated_logits = accumulated_logits + logits
-
-    assert accumulated_logits is not None
-    return accumulated_logits / len(flip_configs)
+    return mean_logits

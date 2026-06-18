@@ -62,3 +62,39 @@ def save_prediction(
         nib.save(nib.Nifti1Image(regions_4d, affine), str(regions_path))
         output_paths["region_prediction_path"] = str(regions_path)
     return output_paths
+
+
+def save_uncertainty_map(
+    uncertainty: np.ndarray,
+    case_id: str,
+    image_path: str | Path,
+    output_dir: Path,
+) -> str:
+    """Save a voxel-wise uncertainty map as a NIfTI file.
+
+    Args:
+        uncertainty: 3D array of shape (D, H, W) with float uncertainty values.
+        case_id: Patient/case identifier.
+        image_path: Path to the reference image used for the affine matrix.
+        output_dir: Directory where the uncertainty map will be saved.
+
+    Returns:
+        Path to the saved uncertainty map.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    reference = nib.load(str(image_path))
+    affine = reference.affine
+
+    uncertainty = np.asarray(uncertainty, dtype=np.float32)
+    if uncertainty.shape != reference.shape[:3]:
+        logger.warning(
+            "Uncertainty shape %s differs from original image shape %s for %s. "
+            "Saved NIfTI will be in the preprocessed space.",
+            uncertainty.shape,
+            reference.shape[:3],
+            case_id,
+        )
+
+    uncertainty_path = output_dir / f"{case_id}_uncertainty.nii.gz"
+    nib.save(nib.Nifti1Image(uncertainty, affine), str(uncertainty_path))
+    return str(uncertainty_path)
