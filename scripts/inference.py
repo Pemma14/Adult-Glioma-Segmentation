@@ -645,6 +645,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--clearml_debug_samples", action="store_true", help="Log per-case inference examples as debug samples in ClearML")
     parser.add_argument("--clearml_project", type=str, default="AdultGliomaSegmentation", help="ClearML project name for the inference task")
     parser.add_argument("--clearml_task_name", type=str, default=None, help="ClearML task name for the inference task (auto-generated if not set)")
+    parser.add_argument("--fold", type=int, default=None, help="Filter metadata to a specific fold column value")
     parser.add_argument("--metadata", type=str, default="data/processed/metadata.csv", help="Path to metadata.csv")
     parser.add_argument("--data_dir", type=str, default="data/processed", help="Processed data root")
     parser.add_argument("--output_dir", type=str, default="results/inference", help="Directory for metrics and predictions")
