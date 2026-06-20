@@ -43,7 +43,7 @@ def _detect_architecture_from_state_dict(state_dict: dict) -> str | None:
 
 def _checkpoint_path(model_name, fold, is_best=True):
     prefix = "best" if is_best else "last"
-    return f"{prefix}_model_{model_name}_fold{fold}.pth"
+    return f"checkpoints/{prefix}_model_{model_name}_fold{fold}.pth"
 
 
 def peek_task_id(path):
@@ -74,7 +74,7 @@ def resolve_ensemble_paths(
 
     * explicit local checkpoint paths (``--ensemble_checkpoints``);
     * automatic discovery by fold index using the project's
-      ``best_model_<model>_fold<N>.pth`` naming convention (``--ensemble_folds``);
+      ``checkpoints/best_model_<model>_fold<N>.pth`` naming convention (``--ensemble_folds``);
     * ClearML model IDs (``--ensemble_clearml_model_ids``), which are downloaded
       to local copies and returned as paths.
     """
@@ -264,6 +264,7 @@ def save_checkpoint(model, config, fold, optimizer=None, scheduler=None, scaler=
                     epoch=None, best_dice=None, is_best=True, save_rng=True):
     prefix = "best" if is_best else "last"
     save_path = _checkpoint_path(config["model_name"], fold, is_best=is_best)
+    Path(save_path).parent.mkdir(parents=True, exist_ok=True)
     checkpoint = {
         "model_name": config["model_name"],
         "model_state_dict": model.state_dict(),
