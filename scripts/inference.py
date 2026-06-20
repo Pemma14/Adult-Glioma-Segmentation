@@ -44,7 +44,6 @@ from scripts.utils.output import save_prediction, save_uncertainty_map
 from scripts.utils.transforms import build_postprocess_transform, ConvertToMultiChannelMSDd
 from scripts.utils.tta import get_tta_variant_count, tta_sliding_window_inference
 from scripts.utils.visualization import (
-    log_inference_example,
     plot_dice_summary,
     plot_hd95_summary,
 )
@@ -290,23 +289,6 @@ def run_inference(args: argparse.Namespace) -> pd.DataFrame:
     if args.sw_batch_size is not None:
         config["sw_batch_size"] = args.sw_batch_size
 
-    clearml_logger = None
-    clearml_task = None
-    if args.clearml_model_id is not None or args.clearml_debug_samples:
-        from clearml import Task
-        task_name = args.clearml_task_name or f"inference_{config['model_name']}_{args.dataset}"
-        task = Task.init(
-            project_name=args.clearml_project,
-            task_name=task_name,
-            task_type=Task.TaskTypes.inference,
-        )
-        task.connect(config)
-        if args.clearml_model_id is not None:
-            task.set_parameter("inference_clearml_model_id", args.clearml_model_id)
-        clearml_task = task
-        clearml_logger = task.get_logger()
-        logger.info("Initialized ClearML inference task: %s", task.id)
-
     device = torch.device(args.device if args.device != "auto" else ("cuda" if torch.cuda.is_available() else "cpu"))
     logger.info("Using device: %s", device)
 
@@ -314,12 +296,11 @@ def run_inference(args: argparse.Namespace) -> pd.DataFrame:
     use_ensemble = (
         args.ensemble_checkpoints is not None
         or args.ensemble_folds is not None
-        or args.ensemble_clearml_model_ids is not None
     )
-    if use_ensemble and (args.checkpoint is not None or args.clearml_model_id is not None):
+    if use_ensemble and args.checkpoint is not None:
         raise ValueError(
-            "Ensemble inference (--ensemble_checkpoints, --ensemble_folds or --ensemble_clearml_model_ids) "
-            "is mutually exclusive with --checkpoint and --clearml_model_id."
+            "Ensemble inference (--ensemble_checkpoints or --ensemble_folds) "
+            "is mutually exclusive with --checkpoint."
         )
 
     ensemble_checkpoint_paths: list[Path] | None = None
@@ -331,7 +312,6 @@ def run_inference(args: argparse.Namespace) -> pd.DataFrame:
         ensemble_checkpoint_paths = resolve_ensemble_paths(
             checkpoint_paths=args.ensemble_checkpoints,
             fold_indices=fold_indices,
-            clearml_model_ids=args.ensemble_clearml_model_ids,
             model_name=config["model_name"],
             root_dir=ROOT_DIR,
             is_best=True,
@@ -376,7 +356,7 @@ def run_inference(args: argparse.Namespace) -> pd.DataFrame:
             ensemble_models = _load_ensemble_models(ensemble_checkpoint_paths, config, device)
             logger.info("Loaded %d ensemble models into memory.", len(ensemble_models))
     else:
-        checkpoint_path = resolve_checkpoint_path(args.checkpoint, args.clearml_model_id, root_dir=ROOT_DIR)
+        checkpoint_path = resolve_checkpoint_path(args.checkpoint, root_dir=ROOT_DIR)
         model = get_model(config["model_name"], config).to(device)
         load_model_weights(model, checkpoint_path, device, model_name=config["model_name"])
         model.eval()
@@ -499,15 +479,6 @@ def run_inference(args: argparse.Namespace) -> pd.DataFrame:
                 row.update(compute_hd95_per_region(prediction, target))
                 row["label_path"] = batch["label_path"][0]
 
-            if clearml_logger is not None and args.clearml_debug_samples:
-                log_inference_example(
-                    image=batch["image"][0],
-                    prediction=prediction,
-                    target=target,
-                    case_id=case_id,
-                    clearml_logger=clearml_logger,
-                )
-
             if not args.no_save_nifti:
                 row.update(save_prediction(prediction, case_id, image_path, predictions_dir, args.save_regions))
 
@@ -551,14 +522,12 @@ def run_inference(args: argparse.Namespace) -> pd.DataFrame:
                 "fold": args.fold,
                 "num_cases": len(results),
                 "checkpoint": str(args.checkpoint) if args.checkpoint is not None else None,
-                "clearml_model_id": args.clearml_model_id,
                 "ensemble": {
                     "enabled": use_ensemble,
                     "checkpoints": [str(p) for p in ensemble_checkpoint_paths] if use_ensemble else None,
                     "weights": ensemble_weights if use_ensemble else None,
                     "weight_by_dice": args.ensemble_weight_by_dice if use_ensemble else False,
                     "low_memory": args.ensemble_low_memory if use_ensemble else False,
-                    "clearml_model_ids": args.ensemble_clearml_model_ids if use_ensemble else None,
                 },
                 "config": {
                     "img_size": config.get("img_size"),
@@ -579,44 +548,10 @@ def run_inference(args: argparse.Namespace) -> pd.DataFrame:
         logger.info("Mean external metrics: %s", metrics)
         logger.info("Saved summary to %s", summary_path)
 
-        if clearml_task is not None:
-            clearml_task.upload_artifact(
-                name="inference_metrics_csv",
-                artifact_object=results,
-                metadata={"num_cases": len(results)},
-            )
-            clearml_task.upload_artifact(
-                name="inference_summary_json",
-                artifact_object=summary,
-            )
-            metrics_summary_df = pd.DataFrame([metrics])
-            clearml_logger.report_table(
-                title="inference_summary/metrics_table",
-                series="metrics",
-                iteration=0,
-                table_plot=metrics_summary_df,
-            )
-
         ensemble_suffix = " (ensemble)" if use_ensemble else ""
         base_title = f"{config['model_name']}{ensemble_suffix} on {args.dataset}"
         dice_fig = plot_dice_summary(results, title=f"Dice Summary: {base_title}")
         hd95_fig = plot_hd95_summary(results, title=f"HD95 Summary: {base_title}")
-
-        if clearml_logger is not None:
-            clearml_logger.report_matplotlib_figure(
-                title="inference_summary/dice",
-                series="dice_summary_plot",
-                iteration=0,
-                figure=dice_fig,
-                report_image=False,
-            )
-            clearml_logger.report_matplotlib_figure(
-                title="inference_summary/hd95",
-                series="hd95_summary_plot",
-                iteration=0,
-                figure=hd95_fig,
-                report_image=False,
-            )
 
         dice_plot_path = output_dir / "inference_summary_dice.png"
         hd95_plot_path = output_dir / "inference_summary_hd95.png"
@@ -635,16 +570,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", type=str, default="configs/swin_unetr.yaml", help="Path to model config")
     parser.add_argument("--dataset", type=str, default="UPENN-GBM", help="Dataset name from metadata.csv")
     parser.add_argument("--checkpoint", type=str, default=None, help="Path to best model checkpoint")
-    parser.add_argument("--clearml_model_id", type=str, default=None, help="ClearML model ID to download; also initializes a ClearML inference task")
     parser.add_argument("--ensemble_checkpoints", nargs="+", default=None, help="List of checkpoint paths for ensemble inference (mutually exclusive with --checkpoint and --ensemble_folds)",)
     parser.add_argument("--ensemble_folds", type=str, default=None, help="Comma-separated fold indices for ensemble inference, e.g. '0,1,2,3,4'. " "Checkpoints are auto-resolved as checkpoints/best_model_<model>_fold<N>.pth.",)
     parser.add_argument("--ensemble_weights", type=float, nargs="+", default=None, help="Optional per-checkpoint weights for weighted ensemble averaging. " "If omitted, equal weights are used.",)
     parser.add_argument("--ensemble_weight_by_dice", action="store_true", help="Automatically weight ensemble members by their stored best validation Dice. " "Mutually exclusive with --ensemble_weights.",)
     parser.add_argument("--ensemble_low_memory", action="store_true", help="Load ensemble models sequentially for each case instead of keeping all in memory. " "Slower, but useful when GPU memory is insufficient for all models.",)
-    parser.add_argument("--ensemble_clearml_model_ids", nargs="+", default=None, help="List of ClearML model IDs for ensemble inference. " "Mutually exclusive with --checkpoint, --clearml_model_id, --ensemble_checkpoints and --ensemble_folds.",)
-    parser.add_argument("--clearml_debug_samples", action="store_true", help="Log per-case inference examples as debug samples in ClearML")
-    parser.add_argument("--clearml_project", type=str, default="AdultGliomaSegmentation", help="ClearML project name for the inference task")
-    parser.add_argument("--clearml_task_name", type=str, default=None, help="ClearML task name for the inference task (auto-generated if not set)")
     parser.add_argument("--fold", type=int, default=None, help="Filter metadata to a specific fold column value")
     parser.add_argument("--metadata", type=str, default="data/processed/metadata.csv", help="Path to metadata.csv")
     parser.add_argument("--data_dir", type=str, default="data/processed", help="Processed data root")

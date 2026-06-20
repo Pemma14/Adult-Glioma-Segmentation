@@ -4,7 +4,6 @@ import numpy as np
 import random
 from pathlib import Path
 import logging
-from clearml import Task
 
 logger = logging.getLogger(__name__)
 
@@ -63,33 +62,28 @@ def peek_task_id(path):
 def resolve_ensemble_paths(
     checkpoint_paths: list[str | Path] | None = None,
     fold_indices: list[int] | None = None,
-    clearml_model_ids: list[str] | None = None,
     model_name: str | None = None,
     root_dir: Path | None = None,
     is_best: bool = True,
 ) -> list[Path]:
     """Resolve a list of ensemble checkpoint paths.
 
-    Supports three mutually exclusive sources:
+    Supports two mutually exclusive sources:
 
     * explicit local checkpoint paths (``--ensemble_checkpoints``);
     * automatic discovery by fold index using the project's
-      ``checkpoints/best_model_<model>_fold<N>.pth`` naming convention (``--ensemble_folds``);
-    * ClearML model IDs (``--ensemble_clearml_model_ids``), which are downloaded
-      to local copies and returned as paths.
+      ``checkpoints/best_model_<model>_fold<N>.pth`` naming convention (``--ensemble_folds``).
     """
     sources = [
         (checkpoint_paths, "--ensemble_checkpoints"),
         (fold_indices, "--ensemble_folds"),
-        (clearml_model_ids, "--ensemble_clearml_model_ids"),
     ]
     provided = [name for src, name in sources if src is not None]
     if len(provided) > 1:
         raise ValueError(f"Specify only one ensemble source: {', '.join(provided)}.")
     if len(provided) == 0:
         raise ValueError(
-            "One of --ensemble_checkpoints, --ensemble_folds, or --ensemble_clearml_model_ids "
-            "must be provided for ensemble inference."
+            "One of --ensemble_checkpoints or --ensemble_folds must be provided for ensemble inference."
         )
 
     if checkpoint_paths is not None:
@@ -101,12 +95,6 @@ def resolve_ensemble_paths(
             if not path.exists():
                 raise FileNotFoundError(f"Ensemble checkpoint not found: {path}")
             paths.append(path)
-        return paths
-
-    if clearml_model_ids is not None:
-        paths = []
-        for model_id in clearml_model_ids:
-            paths.append(resolve_checkpoint_path(None, model_id, root_dir=root_dir))
         return paths
 
     # fold_indices is not None
@@ -127,31 +115,19 @@ def resolve_ensemble_paths(
     return paths
 
 
-def resolve_checkpoint_path(checkpoint_path: str | Path | None, clearml_model_id: str | None,
+def resolve_checkpoint_path(checkpoint_path: str | Path | None,
                             root_dir: Path | None = None) -> Path:
-    """Resolve a checkpoint path from a local file or a ClearML model ID."""
-    if checkpoint_path is not None and clearml_model_id is not None:
-        raise ValueError("Specify either --checkpoint or --clearml_model_id, not both.")
-    if checkpoint_path is None and clearml_model_id is None:
-        raise ValueError("Either --checkpoint or --clearml_model_id must be provided.")
+    """Resolve a local checkpoint path."""
+    if checkpoint_path is None:
+        raise ValueError("--checkpoint must be provided.")
 
-    if checkpoint_path is not None:
-        path = Path(checkpoint_path)
-        if not path.is_absolute():
-            if root_dir is not None:
-                path = root_dir / path
-        if not path.exists():
-            raise FileNotFoundError(f"Checkpoint not found: {path}")
-        return path
-
-    # Lazy import: ClearML is only required when downloading a remote model.
-    from clearml import Model
-
-    logger.info("Downloading model %s from ClearML", clearml_model_id)
-    model_obj = Model(model_id=clearml_model_id)
-    path = model_obj.get_local_copy()
-    logger.info("Model downloaded to %s", path)
-    return Path(path)
+    path = Path(checkpoint_path)
+    if not path.is_absolute():
+        if root_dir is not None:
+            path = root_dir / path
+    if not path.exists():
+        raise FileNotFoundError(f"Checkpoint not found: {path}")
+    return path
 
 
 def get_checkpoint_best_dice(checkpoint_path: Path, device: torch.device = torch.device("cpu")) -> float | None:
@@ -287,8 +263,13 @@ def save_checkpoint(model, config, fold, optimizer=None, scheduler=None, scaler=
             "python": random.getstate(),
         }
 
-    # Сохраняем clearml task_id для продолжения того же эксперимента после resume
-    current_task = Task.current_task()
+    # Optional ClearML integration: log task_id and output model if a ClearML task is active.
+    try:
+        from clearml import Task
+        current_task = Task.current_task()
+    except Exception:
+        current_task = None
+
     if current_task is not None:
         checkpoint["clearml_task_id"] = current_task.id
 
