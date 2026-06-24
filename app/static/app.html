@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Glioma Segmentation — Clinical Interface</title>
+<style>
+:root { --bg: #0f0f1a; --card: #1a1a2e; --border: #2a2a3e; --accent: #e94560; --text: #e0e0e0; --muted: #666; --radius: 10px; }
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+.hidden { display: none !important; }
+.container { max-width: 800px; margin: 0 auto; padding: 24px; }
+
+/* Header */
+.header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; }
+.header h1 { font-size: 1.3rem; font-weight: 600; }
+
+/* Card */
+.card { background: var(--card); border-radius: var(--radius); border: 1px solid var(--border); padding: 32px; margin-bottom: 16px; }
+
+/* Upload zone */
+.drop-zone { border: 2px dashed var(--border); border-radius: var(--radius); padding: 60px 20px; text-align: center; cursor: pointer; transition: 0.2s; }
+.drop-zone:hover, .drop-zone.drag-over { border-color: var(--accent); background: rgba(233,69,96,0.05); }
+.drop-zone .icon { font-size: 3rem; margin-bottom: 12px; }
+.drop-zone .hint { font-size: 0.85rem; color: var(--muted); margin-top: 8px; }
+.drop-zone input { display: none; }
+
+/* Status */
+.status-icon { font-size: 3rem; text-align: center; margin-bottom: 16px; }
+.spinner { width: 40px; height: 40px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; margin: 0 auto 16px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Result volumes */
+.vol-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 24px; }
+.vol-card { background: var(--bg); border-radius: 8px; padding: 16px; text-align: center; border-top: 3px solid; }
+.vol-card .label { font-size: 0.7rem; text-transform: uppercase; color: var(--muted); letter-spacing: 0.5px; }
+.vol-card .value { font-size: 1.6rem; font-weight: 700; margin-top: 4px; }
+.vol-card .unit { font-size: 0.75rem; color: var(--muted); }
+
+/* Download buttons */
+.dl-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 10px 16px; border-radius: 6px; border: none; cursor: pointer; font-size: 0.85rem; font-weight: 500; transition: 0.2s; text-decoration: none; }
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-primary:hover { background: #d63851; }
+.btn-secondary { background: var(--border); color: var(--text); }
+.btn-secondary:hover { background: #3a3a4e; }
+.btn-sm { padding: 6px 12px; font-size: 0.8rem; }
+.btn-full { width: 100%; }
+
+/* Error */
+.error { color: var(--accent); text-align: center; padding: 12px; }
+.success { color: #4ade80; text-align: center; padding: 12px; }
+
+/* Request info */
+.info-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 0.85rem; }
+.info-row:last-child { border-bottom: none; }
+.info-row .label { color: var(--muted); }
+
+/* Toast */
+.toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 12px 24px; font-size: 0.85rem; opacity: 0; transition: 0.3s; pointer-events: none; }
+.toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1>Glioma Segmentation</h1>
+
+  </div>
+
+  <!-- Screen 1: Upload -->
+  <div id="screen-upload" class="card">
+    <div class="drop-zone" id="dropZone">
+      <div class="icon">📤</div>
+      <div><strong>Drop a NIfTI or DICOM file here</strong></div>
+      <div class="hint">or click to select · .nii, .nii.gz, .dcm (zip for DICOM series)</div>
+      <input type="file" id="fileInput" accept=".nii,.nii.gz,.dcm,.zip">
+    </div>
+    <div style="margin-top: 12px; text-align: center;">
+      <button class="btn btn-secondary btn-sm" onclick="document.getElementById('fileInput').click()">Choose File</button>
+    </div>
+  </div>
+
+  <!-- Screen 2: Status -->
+  <div id="screen-status" class="card hidden">
+    <div class="spinner"></div>
+    <div class="status-icon">⏳</div>
+    <div style="text-align: center; margin-bottom: 16px;">
+      <div style="font-size: 1.1rem; font-weight: 600; margin-bottom: 4px;">Processing...</div>
+      <div id="status-msg" style="color: var(--muted); font-size: 0.85rem;">Segmentation in progress</div>
+    </div>
+    <div class="info-row"><span class="label">Request ID</span><span id="status-id">—</span></div>
+    <div class="info-row"><span class="label">Status</span><span id="status-state">pending</span></div>
+  </div>
+
+  <!-- Screen 3: Result -->
+  <div id="screen-result" class="card hidden">
+    <div class="status-icon">✅</div>
+    <div style="text-align: center; margin-bottom: 20px;">
+      <div style="font-size: 1.1rem; font-weight: 600;">Segmentation Complete</div>
+      <div id="result-case-id" style="color: var(--muted); font-size: 0.85rem;"></div>
+    </div>
+
+    <div class="vol-grid">
+      <div class="vol-card" style="border-color:#e94560;">
+        <div class="label">Whole Tumor</div>
+        <div class="value" id="vol-wt">—</div>
+        <div class="unit">mL</div>
+      </div>
+      <div class="vol-card" style="border-color:#0f3460;">
+        <div class="label">Tumor Core</div>
+        <div class="value" id="vol-tc">—</div>
+        <div class="unit">mL</div>
+      </div>
+      <div class="vol-card" style="border-color:#533483;">
+        <div class="label">Enhancing Tumor</div>
+        <div class="value" id="vol-et">—</div>
+        <div class="unit">mL</div>
+      </div>
+    </div>
+
+    <div style="margin-bottom: 12px; font-size: 0.85rem; color: var(--muted);">Download:</div>
+    <div class="dl-grid">
+      <a id="dl-mask" class="btn btn-secondary btn-full btn-sm" href="#" download>Mask (NIfTI)</a>
+      <a id="dl-uncertainty" class="btn btn-secondary btn-full btn-sm" href="#" download>Uncertainty</a>
+      <a id="dl-rtstruct" class="btn btn-primary btn-full btn-sm" href="#" download>RTSTRUCT (DICOM)</a>
+      <a id="dl-report" class="btn btn-secondary btn-full btn-sm" href="#" download>Report (JSON)</a>
+    </div>
+
+    <div style="margin-top: 16px; text-align: center;">
+      <button class="btn btn-secondary btn-sm" onclick="resetUI()">New Segmentation</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<script>
+const API_BASE = window.location.origin;
+let currentRequestId = null;
+let pollTimer = null;
+
+const API_KEY = "demo-key";
+
+function headers() {
+  return { "X-API-Key": API_KEY, "Accept": "application/json" };
+}
+
+function showScreen(id) {
+  ["screen-upload", "screen-status", "screen-result"].forEach(s => {
+    document.getElementById(s).classList.toggle("hidden", s !== id);
+  });
+}
+
+function toast(msg, duration = 3000) {
+  const el = document.getElementById("toast");
+  el.textContent = msg;
+  el.classList.add("show");
+  setTimeout(() => el.classList.remove("show"), duration);
+}
+
+async function apiPost(url, body) {
+  const resp = await fetch(url, { method: "POST", headers: headers(), body });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+    throw new Error(err.detail || `HTTP ${resp.status}`);
+  }
+  return resp.json();
+}
+
+async function apiGet(url) {
+  const resp = await fetch(url, { headers: headers() });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+    throw new Error(err.detail || `HTTP ${resp.status}`);
+  }
+  return resp.json();
+}
+
+// --- Upload ---
+async function uploadFile(file) {
+  const form = new FormData();
+  const isZip = file.name.endsWith(".zip");
+  const endpoint = isZip ? "/api/v1/segmentation/from-dicom" : "/api/v1/segmentation/upload";
+  form.append("file", file);
+  return apiPost(endpoint, form);
+}
+
+function handleFiles(files) {
+  if (!files.length) return;
+  const file = files[0];
+  showScreen("screen-status");
+  document.getElementById("status-state").textContent = "uploading";
+
+  uploadFile(file)
+    .then(data => {
+      currentRequestId = data.request_id;
+      document.getElementById("status-id").textContent = data.request_id;
+      document.getElementById("status-state").textContent = data.status;
+      document.getElementById("status-msg").textContent = data.message || "Queued for inference";
+      pollStatus(data.request_id);
+    })
+    .catch(err => {
+      document.getElementById("status-msg").textContent = err.message;
+      document.getElementById("status-state").textContent = "error";
+      document.querySelector("#screen-status .spinner").remove();
+      document.querySelector("#screen-status .status-icon").textContent = "❌";
+      setTimeout(() => showScreen("screen-upload"), 3000);
+    });
+}
+
+async function pollStatus(requestId) {
+  if (pollTimer) clearTimeout(pollTimer);
+  try {
+    const data = await apiGet(`/api/v1/segmentation/status/${requestId}`);
+    document.getElementById("status-state").textContent = data.status;
+    if (data.message) document.getElementById("status-msg").textContent = data.message;
+
+    if (data.status === "success") {
+      showResult(requestId);
+      return;
+    }
+    if (data.status === "fail") {
+      document.querySelector("#screen-status .spinner").remove();
+      document.querySelector("#screen-status .status-icon").textContent = "❌";
+      document.getElementById("status-msg").textContent = data.message || "Segmentation failed";
+      return;
+    }
+    pollTimer = setTimeout(() => pollStatus(requestId), 2000);
+  } catch (err) {
+    document.getElementById("status-msg").textContent = err.message;
+    pollTimer = setTimeout(() => pollStatus(requestId), 3000);
+  }
+}
+
+async function showResult(requestId) {
+  try {
+    const data = await apiGet(`/api/v1/segmentation/result/${requestId}`);
+
+    if (data.volumes_ml) {
+      document.getElementById("vol-wt").textContent = data.volumes_ml.wt?.toFixed(1) || "—";
+      document.getElementById("vol-tc").textContent = data.volumes_ml.tc?.toFixed(1) || "—";
+      document.getElementById("vol-et").textContent = data.volumes_ml.et?.toFixed(1) || "—";
+    }
+
+    document.getElementById("result-case-id").textContent =
+      data.case_id ? `Case: ${data.case_id}` : "";
+
+    const baseUrl = API_BASE;
+
+    const setLink = (id, url, filename) => {
+      const el = document.getElementById(id);
+      if (url) {
+        el.href = baseUrl + url;
+        el.download = filename || url.split("/").pop();
+        el.classList.remove("hidden");
+      } else {
+        el.classList.add("hidden");
+      }
+    };
+
+    setLink("dl-mask", data.prediction_url, `segmentation_${requestId}_mask.nii.gz`);
+    setLink("dl-uncertainty", data.uncertainty_url, `segmentation_${requestId}_uncertainty.nii.gz`);
+    setLink("dl-report", data.report_url, `segmentation_${requestId}_report.json`);
+
+    document.getElementById("dl-rtstruct").href = `${baseUrl}/api/v1/segmentation/${requestId}/rtstruct`;
+    document.getElementById("dl-rtstruct").download = `segmentation_${requestId}_rtstruct.dcm`;
+
+    showScreen("screen-result");
+  } catch (err) {
+    document.getElementById("status-msg").textContent = "Failed to load result: " + err.message;
+  }
+}
+
+function resetUI() {
+  if (pollTimer) clearTimeout(pollTimer);
+  currentRequestId = null;
+  showScreen("screen-upload");
+}
+
+// --- Drag and drop ---
+const dropZone = document.getElementById("dropZone");
+const fileInput = document.getElementById("fileInput");
+
+dropZone.addEventListener("dragover", (e) => { e.preventDefault(); dropZone.classList.add("drag-over"); });
+dropZone.addEventListener("dragleave", () => dropZone.classList.remove("drag-over"));
+dropZone.addEventListener("drop", (e) => { e.preventDefault(); dropZone.classList.remove("drag-over"); handleFiles(e.dataTransfer.files); });
+dropZone.addEventListener("click", () => fileInput.click());
+fileInput.addEventListener("change", () => { handleFiles(fileInput.files); fileInput.value = ""; });
+
+</script>
+</body>
+</html>

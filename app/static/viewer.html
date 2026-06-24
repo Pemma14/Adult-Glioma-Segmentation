@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Glioma Segmentation Viewer</title>
+<script src="https://cdn.jsdelivr.net/npm/niivue@0.48.1/dist/niivue.umd.min.js"></script>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, system-ui, sans-serif; background: #1a1a2e; color: #eee; overflow: hidden; height: 100vh; }
+.container { max-width: 1200px; margin: 0 auto; padding: 20px; height: 100vh; display: flex; flex-direction: column; }
+.header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-shrink: 0; }
+h1 { font-size: 1.5rem; }
+.controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.btn { background: #16213e; color: #eee; border: 1px solid #0f3460; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 0.85rem; transition: 0.2s; }
+.btn:hover { background: #0f3460; }
+.btn.primary { background: #e94560; border-color: #e94560; }
+.btn.primary:hover { background: #d63851; }
+input[type="file"] { display: none; }
+.volumes { display: flex; gap: 12px; margin-bottom: 12px; flex-shrink: 0; }
+.vol-card { flex: 1; background: #16213e; border-radius: 8px; padding: 10px; text-align: center; border-top: 3px solid; }
+.vol-card .label { font-size: 0.7rem; text-transform: uppercase; color: #888; letter-spacing: 0.5px; }
+.vol-card .value { font-size: 1.3rem; font-weight: 700; margin-top: 2px; }
+.vol-card .unit { font-size: 0.75rem; color: #666; }
+#viewer { flex: 1; min-height: 400px; background: #0d0d1a; border-radius: 8px; border: 2px dashed #333; transition: 0.2s; }
+#viewer.drag-over { border-color: #e94560; background: #1a0f1a; }
+#status { margin-top: 10px; color: #666; font-size: 0.8rem; text-align: center; flex-shrink: 0; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1>Glioma Segmentation Viewer</h1>
+    <div class="controls">
+      <label class="btn" for="uploadBtn">Open Files</label>
+      <input type="file" id="uploadBtn" accept=".nii,.nii.gz,.dcm" multiple>
+      <button class="btn" id="toggleOverlay">Toggle Overlay</button>
+      <button class="btn" id="resetView">Reset</button>
+    </div>
+  </div>
+
+  <div class="volumes" id="volumes">
+    <div class="vol-card" style="border-color:#e94560;">
+      <div class="label">Whole Tumor</div>
+      <div class="value" id="vol-wt">—</div>
+    </div>
+    <div class="vol-card" style="border-color:#0f3460;">
+      <div class="label">Tumor Core</div>
+      <div class="value" id="vol-tc">—</div>
+    </div>
+    <div class="vol-card" style="border-color:#533483;">
+      <div class="label">Enhancing Tumor</div>
+      <div class="value" id="vol-et">—</div>
+    </div>
+  </div>
+
+  <div id="viewer"></div>
+  <div id="status">Drop NIfTI or DICOM files here, or click Open</div>
+</div>
+
+<script>
+const nv = new niivue.Niivue({
+  logging: false,
+  backColor: [0.05, 0.05, 0.1],
+  crosshairColor: [1, 1, 1],
+});
+nv.attachTo("viewer");
+nv.opts.isColorbar = true;
+
+let hasOverlay = false;
+
+async function loadFiles(files) {
+  if (!files.length) return;
+  const fileList = Array.from(files);
+
+  const isDicom = (f) => f.name.endsWith(".dcm") || f.type === "application/dicom";
+  const isNifti = (f) => f.name.endsWith(".nii") || f.name.endsWith(".nii.gz");
+  const isPrediction = (f) => /pred|mask|seg/i.test(f.name);
+
+  const niftiFiles = fileList.filter(isNifti);
+  const dicomFiles = fileList.filter(isDicom);
+  const predFiles = niftiFiles.filter(isPrediction);
+  const imageFiles = niftiFiles.filter((f) => !isPrediction(f));
+
+  let volumes = [];
+
+  if (dicomFiles.length > 0) {
+    for (const f of dicomFiles) {
+      volumes.push({ url: URL.createObjectURL(f), name: f.name });
+    }
+  }
+
+  if (imageFiles.length > 0) {
+    for (const f of imageFiles) {
+      volumes.push({ url: URL.createObjectURL(f), name: f.name });
+    }
+  }
+
+  if (predFiles.length > 0) {
+    hasOverlay = true;
+    for (const f of predFiles) {
+      volumes.push({
+        url: URL.createObjectURL(f),
+        name: `AI: ${f.name}`,
+        colormap: "warm",
+        opacity: 0.35,
+        cal_min: 0,
+        cal_max: 3,
+      });
+    }
+  }
+
+  if (volumes.length === 0) {
+    setStatus("Unsupported file type. Drop .nii, .nii.gz, or .dcm files.");
+    return;
+  }
+
+  await nv.loadVolumes(volumes);
+  nv.setSliceType(nv.sliceTypeAxial);
+  setStatus(`Loaded ${fileList.map((f) => f.name).join(", ")}`);
+}
+
+function setStatus(msg) {
+  document.getElementById("status").textContent = msg;
+}
+
+// Drag-and-drop
+const viewerEl = document.getElementById("viewer");
+
+viewerEl.addEventListener("dragover", (e) => {
+  e.preventDefault();
+  viewerEl.classList.add("drag-over");
+});
+
+viewerEl.addEventListener("dragleave", () => {
+  viewerEl.classList.remove("drag-over");
+});
+
+viewerEl.addEventListener("drop", (e) => {
+  e.preventDefault();
+  viewerEl.classList.remove("drag-over");
+  loadFiles(e.dataTransfer.files);
+});
+
+// Button upload
+document.getElementById("uploadBtn").addEventListener("change", (e) => {
+  loadFiles(e.target.files);
+  e.target.value = "";
+});
+
+// Toggle overlay
+document.getElementById("toggleOverlay").addEventListener("click", () => {
+  if (nv.volumes.length < 2) {
+    setStatus("Load a prediction mask first to toggle overlay");
+    return;
+  }
+  const overlay = nv.volumes[nv.volumes.length - 1];
+  overlay.opacity = overlay.opacity > 0 ? 0 : 0.35;
+  nv.updateGLVolume();
+  setStatus(`Overlay ${overlay.opacity > 0 ? "ON" : "OFF"}`);
+});
+
+// Reset view
+document.getElementById("resetView").addEventListener("click", () => {
+  nv.setSliceType(nv.sliceTypeAxial);
+  const d = nv.volumes[0]?.volume?.dims;
+  if (d) nv.setSliceMM(d.slice(1, 4).map((v) => v / 2));
+  setStatus("View reset");
+});
+</script>
+</body>
+</html>

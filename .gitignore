@@ -171,4 +171,5 @@ checkpoint/
 checkpoints/*.pth
 logs/
 clearml.conf
-results/
+experiments/results/
+data/dicom_temp/
