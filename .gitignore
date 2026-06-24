@@ -173,3 +173,4 @@ logs/
 clearml.conf
 experiments/results/
 data/dicom_temp/
+nginx/ssl/*.pem

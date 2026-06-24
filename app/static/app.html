@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Glioma Segmentation — Clinical Interface</title>
+<script src="https://unpkg.com/@niivue/niivue@0.46.0/dist/niivue.umd.js" crossorigin="anonymous"></script>
 <style>
 :root { --bg: #0f0f1a; --card: #1a1a2e; --border: #2a2a3e; --accent: #e94560; --text: #e0e0e0; --muted: #666; --radius: 10px; }
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -127,6 +128,23 @@ body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg);
       <a id="dl-report" class="btn btn-secondary btn-full btn-sm" href="#" download>Report (JSON)</a>
     </div>
 
+    <div id="viz-container" style="margin-top: 16px; display: none;">
+      <div style="margin-bottom: 8px; font-size: 0.85rem; color: var(--muted);">Preview:</div>
+      <div id="viz-images" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px;"></div>
+    </div>
+
+    <div id="viewer-container" style="margin-top: 16px; display: none;">
+      <div style="margin-bottom: 8px; font-size: 0.85rem; color: var(--muted);">Interactive 3D View:</div>
+      <canvas id="niivue-canvas" style="width: 100%; height: 480px; border-radius: 8px; border: 1px solid var(--border); background: #000;"></canvas>
+      <div style="display: flex; gap: 8px; justify-content: center; margin-top: 8px; flex-wrap: wrap;">
+        <button class="btn btn-secondary btn-sm" onclick="setSliceType('axial')">Axial</button>
+        <button class="btn btn-secondary btn-sm" onclick="setSliceType('coronal')">Coronal</button>
+        <button class="btn btn-secondary btn-sm" onclick="setSliceType('sagittal')">Sagittal</button>
+        <button class="btn btn-secondary btn-sm" onclick="setSliceType('multi')">Multi-planar</button>
+        <button class="btn btn-secondary btn-sm" onclick="setSliceType('render')">3D Render</button>
+      </div>
+    </div>
+
     <div style="margin-top: 16px; text-align: center;">
       <button class="btn btn-secondary btn-sm" onclick="resetUI()">New Segmentation</button>
     </div>
@@ -139,11 +157,15 @@ body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg);
 const API_BASE = window.location.origin;
 let currentRequestId = null;
 let pollTimer = null;
+let nv = null;
 
-const API_KEY = "demo-key";
+const API_KEY = localStorage.getItem("glioma_api_key") || prompt("Enter your API key:");
+if (API_KEY) {
+  localStorage.setItem("glioma_api_key", API_KEY);
+}
 
 function headers() {
-  return { "X-API-Key": API_KEY, "Accept": "application/json" };
+  return { "X-API-Key": API_KEY || "", "Accept": "application/json" };
 }
 
 function showScreen(id) {
@@ -233,14 +255,76 @@ async function pollStatus(requestId) {
   }
 }
 
+function setSliceType(type) {
+  if (!nv) return;
+  const map = {
+    axial: nv.sliceTypeAxial,
+    coronal: nv.sliceTypeCoronal,
+    sagittal: nv.sliceTypeSagittal,
+    multi: nv.sliceTypeMultiplanar,
+    render: nv.sliceTypeRender,
+  };
+  nv.setSliceType(map[type]);
+}
+
+async function initViewer(inputUrl, maskUrl) {
+  const canvas = document.getElementById("niivue-canvas");
+  const container = document.getElementById("viewer-container");
+  container.style.display = "block";
+
+  if (nv) {
+    nv.detach();
+    nv = null;
+  }
+
+  nv = new niivue.Niivue({
+    show3Dcrosshair: true,
+    backColor: [0, 0, 0, 1],
+    crosshairColor: [1, 1, 1, 1],
+  });
+  nv.attachToCanvas(canvas);
+
+  // Multiclass BraTS colormap (0=transparent, 1=necrotic/core, 2=edema, 3=enhancing)
+  const cmap = {
+    R: [0, 255, 255, 255],
+    G: [0, 0, 255, 165],
+    B: [0, 0, 0, 0],
+    A: [0, 255, 255, 255],
+    I: [0, 1, 2, 3],
+  };
+
+  const volumes = [];
+  if (inputUrl) {
+    volumes.push({
+      url: inputUrl,
+      opacity: 1.0,
+      colormap: "gray",
+      frame4D: 0, // if the scan is 4D (modalities/time), show the first 3D volume
+    });
+  }
+  if (maskUrl) {
+    volumes.push({
+      url: maskUrl,
+      opacity: inputUrl ? 0.7 : 1.0,
+      colormapLabel: cmap,
+      cal_min: 0,
+      cal_max: 3,
+      frame4D: 0,
+    });
+  }
+
+  await nv.loadVolumes(volumes);
+  nv.setSliceType(nv.sliceTypeAxial);
+}
+
 async function showResult(requestId) {
   try {
     const data = await apiGet(`/api/v1/segmentation/result/${requestId}`);
 
     if (data.volumes_ml) {
-      document.getElementById("vol-wt").textContent = data.volumes_ml.wt?.toFixed(1) || "—";
-      document.getElementById("vol-tc").textContent = data.volumes_ml.tc?.toFixed(1) || "—";
-      document.getElementById("vol-et").textContent = data.volumes_ml.et?.toFixed(1) || "—";
+      document.getElementById("vol-wt").textContent = data.volumes_ml.wt?.toFixed(3) || "—";
+      document.getElementById("vol-tc").textContent = data.volumes_ml.tc?.toFixed(3) || "—";
+      document.getElementById("vol-et").textContent = data.volumes_ml.et?.toFixed(3) || "—";
     }
 
     document.getElementById("result-case-id").textContent =
@@ -265,6 +349,26 @@ async function showResult(requestId) {
 
     document.getElementById("dl-rtstruct").href = `${baseUrl}/api/v1/segmentation/${requestId}/rtstruct`;
     document.getElementById("dl-rtstruct").download = `segmentation_${requestId}_rtstruct.dcm`;
+
+    const vizContainer = document.getElementById("viz-container");
+    const vizImages = document.getElementById("viz-images");
+    vizImages.innerHTML = "";
+    if (data.visualization_urls && data.visualization_urls.length > 0) {
+      vizContainer.style.display = "block";
+      data.visualization_urls.forEach((url) => {
+        const img = document.createElement("img");
+        img.src = baseUrl + url;
+        img.alt = "Segmentation preview";
+        img.style.width = "100%";
+        img.style.borderRadius = "8px";
+        img.style.border = "1px solid var(--border)";
+        vizImages.appendChild(img);
+      });
+    } else {
+      vizContainer.style.display = "none";
+    }
+
+    await initViewer(data.input_url, data.prediction_url);
 
     showScreen("screen-result");
   } catch (err) {

@@ -21,8 +21,32 @@ import torch
 from app.config import settings
 from app.schemas.ml_task_schemas import MLResult, MLTask
 from src.glioma.inference import predict
+from src.glioma.model import load_ensemble_for_inference
+from src.glioma.settings import load_model_config
 
 logger = logging.getLogger(__name__)
+
+# Ensemble is loaded once per worker process and reused for all tasks.
+_worker_config = None
+_worker_models = None
+_worker_device = None
+
+
+def _load_ensemble_once() -> None:
+    """Load model config and ensemble once at worker startup."""
+    global _worker_config, _worker_models, _worker_device
+    if _worker_config is not None:
+        return
+
+    _worker_config = load_model_config()
+    _worker_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    logger.info(
+        "Loading ensemble once for worker on %s (version %s)",
+        _worker_device,
+        settings.glioma.MODEL_VERSION,
+    )
+    _worker_models = load_ensemble_for_inference(_worker_device, _worker_config)
+    logger.info("Worker ensemble ready")
 
 
 def configure_logging() -> None:
@@ -51,19 +75,19 @@ def _run_inference(task: MLTask) -> MLResult:
     output_dir = Path(task.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(
         "Running ensemble inference for request %s on %s",
         task.request_id,
-        device,
+        _worker_device,
     )
 
     try:
         result = predict(
             image_path=task.input_file_path,
             output_dir=output_dir,
-            device=device,
-            folds=None,
+            device=_worker_device,
+            config=_worker_config,
+            models=_worker_models,
             save_uncertainty=task.save_uncertainty,
             save_regions=True,
             save_visualization=True,
@@ -140,6 +164,8 @@ async def main() -> None:
     configure_logging()
     logger.info("Starting glioma segmentation worker")
     logger.info("Model version: %s", settings.glioma.MODEL_VERSION)
+
+    _load_ensemble_once()
 
     connection = await aio_pika.connect_robust(settings.mq.amqp_url)
     try:

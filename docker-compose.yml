@@ -74,11 +74,7 @@ services:
       - glioma-network
 
   glioma-worker:
-    build:
-      context: .
-      dockerfile: app/Dockerfile
     image: glioma-service:0.1.0
-    container_name: glioma-service-worker
     restart: unless-stopped
     command: ["python", "-m", "ml_worker.glioma_worker"]
     env_file:
@@ -91,7 +87,7 @@ services:
       - ./data/uploads:/app/data/uploads
       - ./data/outputs:/app/data/outputs
     deploy:
-      replicas: 2
+      replicas: 1
     depends_on:
       rabbitmq:
         condition: service_healthy

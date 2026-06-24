@@ -87,6 +87,9 @@ class GliomaRequestService:
         input_path = self._save_upload_file(file, db_request.id)
         output_dir = settings.glioma.OUTPUT_DIR / f"request_{db_request.id}"
         output_dir.mkdir(parents=True, exist_ok=True)
+        # Keep a copy of the input in output_dir so the viewer and public
+        # static mount can serve it without exposing the uploads directory.
+        shutil.copy2(str(input_path), str(output_dir / input_path.name))
 
         db_request.input_file_path = str(input_path)
         db_request.output_dir = str(output_dir)
@@ -149,6 +152,9 @@ class GliomaRequestService:
             prediction_url=self._file_url(db_request.prediction_path),
             uncertainty_url=self._file_url(db_request.uncertainty_path),
             report_url=self._file_url(db_request.report_path),
+            input_url=self._file_url(
+                str(Path(db_request.output_dir) / Path(db_request.input_file_path).name)
+            ),
             visualization_urls=[self._file_url(p) for p in (db_request.visualization_paths or [])],
             created_at=db_request.created_at,
             completed_at=db_request.completed_at,

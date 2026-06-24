@@ -41,6 +41,7 @@ class SGliomaResultResponse(BaseModel):
     prediction_url: Optional[str] = Field(None, description="URL to download the segmentation mask")
     uncertainty_url: Optional[str] = Field(None, description="URL to download the uncertainty map")
     report_url: Optional[str] = Field(None, description="URL to download the JSON report")
+    input_url: Optional[str] = Field(None, description="URL to download the original input scan")
     visualization_urls: Optional[List[str]] = Field(None, description="URLs of PNG visualizations")
     created_at: datetime = Field(..., description="Request creation timestamp")
     completed_at: Optional[datetime] = Field(None, description="Completion timestamp")

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import nibabel as nib
+from nibabel.processing import resample_from_to
 import numpy as np
 import torch
 from monai.data import Dataset
@@ -63,6 +64,22 @@ def preprocess_image(image_path: str | Path, img_size: list[int]) -> tuple[torch
     if not image_path.exists():
         raise FileNotFoundError(f"Image not found: {image_path}")
 
+    # Fast shape validation before running expensive MONAI transforms.
+    nifti_header = nib.load(str(image_path))
+    shape = nifti_header.shape
+    ndim = len(shape)
+    if ndim == 3:
+        raise ValueError(
+            f"Input appears to be a single-channel 3D NIfTI with shape {shape}. "
+            "This model expects a 4D multi-modal scan (e.g. T1, T1ce, T2, FLAIR) "
+            "with shape (H, W, D, 4). Segmentation masks or single-modality files are not supported."
+        )
+    if ndim != 4 or shape[-1] != 4:
+        raise ValueError(
+            f"Unsupported input shape {shape}. Expected a 4D NIfTI with 4 channels/modalities, "
+            "e.g. shape (H, W, D, 4)."
+        )
+
     transform = _build_preprocessing_transform(img_size)
     dataset = Dataset(data=[{"image": str(image_path)}], transform=transform)
     item = dataset[0]
@@ -70,7 +87,16 @@ def preprocess_image(image_path: str | Path, img_size: list[int]) -> tuple[torch
     if image.ndim == 4:
         image = image.unsqueeze(0)
 
-    resampled_affine = item["image_meta_dict"]["affine"]
+    image_meta = item["image"]
+    if hasattr(image_meta, "affine"):
+        resampled_affine = image_meta.affine
+    elif hasattr(image_meta, "meta") and "affine" in image_meta.meta:
+        resampled_affine = image_meta.meta["affine"]
+    elif "image_meta_dict" in item and "affine" in item["image_meta_dict"]:
+        resampled_affine = item["image_meta_dict"]["affine"]
+    else:
+        raise KeyError("Could not find affine in image metadata")
+
     if isinstance(resampled_affine, torch.Tensor):
         resampled_affine = resampled_affine.cpu().numpy()
     return image, resampled_affine
@@ -123,6 +149,7 @@ def predict(
     save_regions: bool = False,
     save_visualization: bool = False,
     n_slices: int = 3,
+    models: list[torch.nn.Module] | None = None,
 ) -> dict[str, Any]:
     """Run clinical inference on a single image and save results.
 
@@ -156,8 +183,9 @@ def predict(
     inputs, resampled_affine = preprocess_image(image_path, img_size)
     inputs = inputs.to(device)
 
-    logger.info("Loading ensemble models")
-    models = load_ensemble_for_inference(device, config, folds=folds)
+    if models is None:
+        logger.info("Loading ensemble models")
+        models = load_ensemble_for_inference(device, config, folds=folds)
 
     logger.info("Running ensemble inference on %s", device)
     use_amp = device.type == "cuda"
@@ -181,26 +209,41 @@ def predict(
 
     case_id = image_path.name.replace(".nii.gz", "").replace(".nii", "")
 
-    # Resample prediction from 1mm RAS back to original image space
+    # Resample prediction from 1mm RAS back to original image space.
+    # The input may be a 4D NIfTI where the last dimension is channels/modalities;
+    # use only the spatial 3D volume as the reference for resampling.
     original_img = nib.load(str(image_path))
-    pred_in_resampled = nib.Nifti1Image(prediction.astype(np.uint8), resampled_affine)
-    pred_in_original = nib.processing.resample_from_to(
-        pred_in_resampled, original_img, order=0
-    )
+    if original_img.ndim == 4:
+        original_data = original_img.get_fdata()[..., 0]
+    else:
+        original_data = original_img.get_fdata()
+    original_3d = nib.Nifti1Image(original_data, original_img.affine)
+
+    from src.glioma.output import regions_to_multiclass_mask, save_prediction, save_uncertainty_map
+
+    # Convert region logits to a 3D multiclass mask in the model's 1mm RAS space
+    # before resampling back to the original patient space.
+    multiclass_in_resampled = regions_to_multiclass_mask(prediction)
+    pred_in_resampled = nib.Nifti1Image(multiclass_in_resampled, resampled_affine)
+    pred_in_original = resample_from_to(pred_in_resampled, original_3d, order=0)
     prediction_original = pred_in_original.get_fdata().astype(np.uint8)
 
-    from src.glioma.output import save_prediction, save_uncertainty_map
     result = save_prediction(
-        prediction_original, case_id, image_path, output_dir, save_regions
+        prediction_original, case_id, image_path, output_dir, save_regions=False
     )
+
+    if save_regions:
+        # Per-region 4D mask remains in the model's processing space.
+        regions_path = output_dir / f"{case_id}_pred_regions.nii.gz"
+        regions_4d = np.moveaxis(prediction.astype(np.uint8), 0, -1)
+        nib.save(nib.Nifti1Image(regions_4d, resampled_affine), str(regions_path))
+        result["region_prediction_path"] = str(regions_path)
 
     if save_uncertainty:
         unc_in_resampled = nib.Nifti1Image(
             uncertainty[0].cpu().numpy().astype(np.float32), resampled_affine
         )
-        unc_in_original = nib.processing.resample_from_to(
-            unc_in_resampled, original_img, order=1
-        )
+        unc_in_original = resample_from_to(unc_in_resampled, original_3d, order=1)
         uncertainty_original = unc_in_original.get_fdata().astype(np.float32)
         uncertainty_path = save_uncertainty_map(
             uncertainty_original, case_id, image_path, output_dir
