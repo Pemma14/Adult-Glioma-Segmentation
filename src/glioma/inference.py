@@ -222,7 +222,6 @@ def predict(
     from src.glioma.output import (
         regions_to_multiclass_mask,
         save_prediction,
-        save_rgb_mask,
         save_uncertainty_map,
     )
 
@@ -234,10 +233,7 @@ def predict(
     prediction_original = pred_in_original.get_fdata().astype(np.uint8)
 
     result = save_prediction(
-        prediction_original, case_id, image_path, output_dir, save_regions=False
-    )
-    result["rgb_mask_path"] = save_rgb_mask(
-        prediction_original, case_id, image_path, output_dir
+        prediction_original, case_id, image_path, output_dir, save_regions=True
     )
 
     if save_regions:

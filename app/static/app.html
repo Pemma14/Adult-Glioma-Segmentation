@@ -183,7 +183,7 @@ const API_BASE = window.location.origin;
 let currentRequestId = null;
 let pollTimer = null;
 let nv = null;
-let layerIdx = { input: -1, mask: -1, uncertainty: -1 };
+let layerIdx = { input: -1, mask: [], uncertainty: -1 };
 
 const API_KEY = localStorage.getItem("glioma_api_key") || prompt("Enter your API key:");
 if (API_KEY) {
@@ -294,23 +294,32 @@ function setSliceType(type) {
   nv.setSliceType(map[type]);
 }
 
-async function initViewer(inputUrl, maskUrl, uncertaintyUrl) {
+async function initViewer(inputUrl, regionMaskUrl, uncertaintyUrl) {
   const canvas = document.getElementById("niivue-canvas");
   const container = document.getElementById("viewer-container");
   container.style.display = "block";
 
-  if (nv) {
-    nv.detach();
-    nv = null;
-  }
-  layerIdx = { input: -1, mask: -1, uncertainty: -1 };
+  layerIdx = { input: -1, mask: [], uncertainty: -1 };
 
-  nv = new niivue.Niivue({
-    show3Dcrosshair: true,
-    backColor: [0, 0, 0, 1],
-    crosshairColor: [1, 1, 1, 1],
-  });
-  nv.attachToCanvas(canvas);
+  if (!nv) {
+    nv = new niivue.Niivue({
+      show3Dcrosshair: true,
+      backColor: [0, 0, 0, 1],
+      crosshairColor: [1, 1, 1, 1],
+    });
+    nv.attachToCanvas(canvas);
+    // Register custom solid colormaps for BraTS regions.
+    nv.addColormap("brats_green", { R: [0, 0], G: [0, 204], B: [0, 0], A: [0, 255], I: [0, 1] });
+    nv.addColormap("brats_red", { R: [0, 255], G: [0, 0], B: [0, 0], A: [0, 255], I: [0, 1] });
+    nv.addColormap("brats_yellow", { R: [0, 255], G: [0, 255], B: [0, 0], A: [0, 255], I: [0, 1] });
+    // Uncertainty: transparent below threshold, red-yellow at high values.
+    nv.addColormap("uncertainty", { R: [0, 0, 255, 255], G: [0, 0, 0, 255], B: [0, 0, 0, 0], A: [0, 0, 128, 255], I: [0, 0.2, 0.5, 1] });
+  } else {
+    // Remove previously loaded volumes before loading new ones.
+    while (nv.volumes.length > 0) {
+      nv.removeVolume(nv.volumes[0]);
+    }
+  }
 
   const volumes = [];
   if (inputUrl) {
@@ -321,19 +330,31 @@ async function initViewer(inputUrl, maskUrl, uncertaintyUrl) {
       colormap: "gray",
     });
   }
-  if (maskUrl) {
-    layerIdx.mask = volumes.length;
-    volumes.push({
-      url: maskUrl,
-      opacity: 0.7,
-    });
+  if (regionMaskUrl) {
+    // 4D NIfTI with 3 binary channels: 0=WT, 1=TC, 2=ET
+    const regionOverlays = [
+      { frame4D: 0, colormap: "brats_green", name: "WT" },
+      { frame4D: 1, colormap: "brats_red", name: "TC" },
+      { frame4D: 2, colormap: "brats_yellow", name: "ET" },
+    ];
+    for (const region of regionOverlays) {
+      layerIdx.mask.push(volumes.length);
+      volumes.push({
+        url: regionMaskUrl,
+        opacity: 0.5,
+        colormap: region.colormap,
+        frame4D: region.frame4D,
+        cal_min: 0,
+        cal_max: 1,
+      });
+    }
   }
   if (uncertaintyUrl) {
     layerIdx.uncertainty = volumes.length;
     volumes.push({
       url: uncertaintyUrl,
       opacity: 0.3,
-      colormap: "hot",
+      colormap: "uncertainty",
       cal_min: 0,
     });
   }
@@ -342,27 +363,40 @@ async function initViewer(inputUrl, maskUrl, uncertaintyUrl) {
   nv.setSliceType(nv.sliceTypeAxial);
 
   // Sync UI controls with the initial state
-  document.getElementById("toggle-mask").checked = layerIdx.mask >= 0;
+  document.getElementById("toggle-mask").checked = layerIdx.mask.length > 0;
   document.getElementById("toggle-uncertainty").checked = layerIdx.uncertainty >= 0;
-  document.getElementById("opacity-mask").value = 70;
-  document.getElementById("opacity-mask-val").textContent = "70%";
+  document.getElementById("opacity-mask").value = 50;
+  document.getElementById("opacity-mask-val").textContent = "50%";
   document.getElementById("opacity-uncertainty").value = 30;
   document.getElementById("opacity-uncertainty-val").textContent = "30%";
 }
 
-function toggleLayer(name, visible) {
-  if (!nv || layerIdx[name] < 0) return;
-  const opacity = visible ? parseInt(document.getElementById(`opacity-${name}`).value, 10) / 100 : 0;
-  nv.setOpacity(layerIdx[name], opacity);
-  nv.updateGLVolume();
-}
-
 function setLayerOpacity(name, value) {
-  if (!nv || layerIdx[name] < 0) return;
+  if (!nv) return;
   document.getElementById(`opacity-${name}-val`).textContent = `${value}%`;
   const checkbox = document.getElementById(`toggle-${name}`);
   if (!checkbox.checked) return;
-  nv.setOpacity(layerIdx[name], value / 100);
+  const opacity = value / 100;
+  if (name === "mask") {
+    for (const idx of layerIdx.mask) {
+      nv.setOpacity(idx, opacity);
+    }
+  } else if (layerIdx[name] >= 0) {
+    nv.setOpacity(layerIdx[name], opacity);
+  }
+  nv.updateGLVolume();
+}
+
+function toggleLayer(name, visible) {
+  if (!nv) return;
+  const opacity = visible ? parseInt(document.getElementById(`opacity-${name}`).value, 10) / 100 : 0;
+  if (name === "mask") {
+    for (const idx of layerIdx.mask) {
+      nv.setOpacity(idx, opacity);
+    }
+  } else if (layerIdx[name] >= 0) {
+    nv.setOpacity(layerIdx[name], opacity);
+  }
   nv.updateGLVolume();
 }
 
@@ -399,7 +433,7 @@ async function showResult(requestId) {
       vizContainer.style.display = "none";
     }
 
-    await initViewer(data.input_url, data.rgb_mask_url, data.uncertainty_url);
+    await initViewer(data.input_url, data.region_prediction_url, data.uncertainty_url);
 
     showScreen("screen-result");
   } catch (err) {

@@ -124,7 +124,8 @@ def create_application() -> FastAPI:
 
     @application.post("/api/v1/segmentation/upload")
     async def upload_scan(
-        file: UploadFile = File(...), background_tasks: BackgroundTasks | None = None
+        background_tasks: BackgroundTasks,
+        file: UploadFile = File(...),
     ) -> dict[str, Any]:
         global _colab_state  # noqa: PLW0603
         _colab_state = {
@@ -149,11 +150,7 @@ def create_application() -> FastAPI:
         _colab_state["input_url"] = f"/outputs/colab_request/{safe_name}"
 
         _colab_state["message"] = "Running inference..."
-        if background_tasks is not None:
-            background_tasks.add_task(_run_inference, input_path, request_dir)
-        else:
-            # Fallback: run synchronously if background tasks are unavailable.
-            _run_inference(input_path, request_dir)
+        background_tasks.add_task(_run_inference, input_path, request_dir)
 
         return {
             "request_id": REQUEST_ID,
@@ -205,7 +202,7 @@ def create_application() -> FastAPI:
             case_id=result.get("case_id"),
             volumes_ml=volumes,
             prediction_url=_relative_url(result.get("prediction_path")),
-            rgb_mask_url=_relative_url(result.get("rgb_mask_path")),
+            region_prediction_url=_relative_url(result.get("region_prediction_path")),
             uncertainty_url=_relative_url(result.get("uncertainty_path")),
             report_url=_relative_url(report_path),
             input_url=_colab_state.get("input_url"),
