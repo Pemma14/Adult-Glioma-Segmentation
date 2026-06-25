@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Glioma Segmentation — Clinical Interface</title>
-<script src="https://unpkg.com/@niivue/niivue@0.46.0/dist/niivue.umd.js" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@niivue/niivue@0.48.1/dist/niivue.umd.js" crossorigin="anonymous"></script>
 <style>
 :root { --bg: #0f0f1a; --card: #1a1a2e; --border: #2a2a3e; --accent: #e94560; --text: #e0e0e0; --muted: #666; --radius: 10px; }
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -38,15 +38,12 @@ body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg);
 .vol-card .value { font-size: 1.6rem; font-weight: 700; margin-top: 4px; }
 .vol-card .unit { font-size: 0.75rem; color: var(--muted); }
 
-/* Download buttons */
-.dl-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 10px 16px; border-radius: 6px; border: none; cursor: pointer; font-size: 0.85rem; font-weight: 500; transition: 0.2s; text-decoration: none; }
 .btn-primary { background: var(--accent); color: #fff; }
 .btn-primary:hover { background: #d63851; }
 .btn-secondary { background: var(--border); color: var(--text); }
 .btn-secondary:hover { background: #3a3a4e; }
 .btn-sm { padding: 6px 12px; font-size: 0.8rem; }
-.btn-full { width: 100%; }
 
 /* Error */
 .error { color: var(--accent); text-align: center; padding: 12px; }
@@ -92,6 +89,9 @@ body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg);
     </div>
     <div class="info-row"><span class="label">Request ID</span><span id="status-id">—</span></div>
     <div class="info-row"><span class="label">Status</span><span id="status-state">pending</span></div>
+    <div style="margin-top: 16px; text-align: center;">
+      <button class="btn btn-secondary btn-sm" onclick="cancelProcess()">Cancel</button>
+    </div>
   </div>
 
   <!-- Screen 3: Result -->
@@ -120,14 +120,6 @@ body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg);
       </div>
     </div>
 
-    <div style="margin-bottom: 12px; font-size: 0.85rem; color: var(--muted);">Download:</div>
-    <div class="dl-grid">
-      <a id="dl-mask" class="btn btn-secondary btn-full btn-sm" href="#" download>Mask (NIfTI)</a>
-      <a id="dl-uncertainty" class="btn btn-secondary btn-full btn-sm" href="#" download>Uncertainty</a>
-      <a id="dl-rtstruct" class="btn btn-primary btn-full btn-sm" href="#" download>RTSTRUCT (DICOM)</a>
-      <a id="dl-report" class="btn btn-secondary btn-full btn-sm" href="#" download>Report (JSON)</a>
-    </div>
-
     <div id="viz-container" style="margin-top: 16px; display: none;">
       <div style="margin-bottom: 8px; font-size: 0.85rem; color: var(--muted);">Preview:</div>
       <div id="viz-images" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px;"></div>
@@ -142,6 +134,39 @@ body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg);
         <button class="btn btn-secondary btn-sm" onclick="setSliceType('sagittal')">Sagittal</button>
         <button class="btn btn-secondary btn-sm" onclick="setSliceType('multi')">Multi-planar</button>
         <button class="btn btn-secondary btn-sm" onclick="setSliceType('render')">3D Render</button>
+      </div>
+
+      <div style="margin-top: 12px; padding: 12px; background: var(--bg); border-radius: 8px; border: 1px solid var(--border); font-size: 0.8rem;">
+        <div style="margin-bottom: 10px; font-weight: 600;">Segmentation legend</div>
+        <div style="display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 12px;">
+          <span><span style="display:inline-block;width:12px;height:12px;background:#00cc00;border-radius:2px;margin-right:4px;"></span>WT\TC (edema)</span>
+          <span><span style="display:inline-block;width:12px;height:12px;background:#ff0000;border-radius:2px;margin-right:4px;"></span>TC\ET (core)</span>
+          <span><span style="display:inline-block;width:12px;height:12px;background:#ffff00;border-radius:2px;margin-right:4px;"></span>ET (enhancing)</span>
+        </div>
+
+        <div style="display: grid; gap: 8px;">
+          <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+            <input type="checkbox" id="toggle-mask" checked onchange="toggleLayer('mask', this.checked)">
+            <span>Show segmentation mask</span>
+          </label>
+          <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+            <input type="checkbox" id="toggle-uncertainty" onchange="toggleLayer('uncertainty', this.checked)">
+            <span>Show uncertainty map</span>
+          </label>
+        </div>
+
+        <div style="margin-top: 10px; display: grid; gap: 6px;">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="min-width: 80px;">Mask opacity</span>
+            <input type="range" id="opacity-mask" min="0" max="100" value="70" style="flex: 1;" oninput="setLayerOpacity('mask', this.value)">
+            <span id="opacity-mask-val" style="min-width: 32px; text-align: right;">70%</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="min-width: 80px;">Uncertainty</span>
+            <input type="range" id="opacity-uncertainty" min="0" max="100" value="30" style="flex: 1;" oninput="setLayerOpacity('uncertainty', this.value)">
+            <span id="opacity-uncertainty-val" style="min-width: 32px; text-align: right;">30%</span>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -158,6 +183,7 @@ const API_BASE = window.location.origin;
 let currentRequestId = null;
 let pollTimer = null;
 let nv = null;
+let layerIdx = { input: -1, mask: -1, uncertainty: -1 };
 
 const API_KEY = localStorage.getItem("glioma_api_key") || prompt("Enter your API key:");
 if (API_KEY) {
@@ -216,11 +242,12 @@ function handleFiles(files) {
 
   uploadFile(file)
     .then(data => {
-      currentRequestId = data.request_id;
-      document.getElementById("status-id").textContent = data.request_id;
+      console.log("Upload response:", data);
+      currentRequestId = data.request_id ?? 1;
+      document.getElementById("status-id").textContent = currentRequestId;
       document.getElementById("status-state").textContent = data.status;
       document.getElementById("status-msg").textContent = data.message || "Queued for inference";
-      pollStatus(data.request_id);
+      pollStatus(currentRequestId);
     })
     .catch(err => {
       document.getElementById("status-msg").textContent = err.message;
@@ -267,7 +294,7 @@ function setSliceType(type) {
   nv.setSliceType(map[type]);
 }
 
-async function initViewer(inputUrl, maskUrl) {
+async function initViewer(inputUrl, maskUrl, uncertaintyUrl) {
   const canvas = document.getElementById("niivue-canvas");
   const container = document.getElementById("viewer-container");
   container.style.display = "block";
@@ -276,6 +303,7 @@ async function initViewer(inputUrl, maskUrl) {
     nv.detach();
     nv = null;
   }
+  layerIdx = { input: -1, mask: -1, uncertainty: -1 };
 
   nv = new niivue.Niivue({
     show3Dcrosshair: true,
@@ -284,37 +312,79 @@ async function initViewer(inputUrl, maskUrl) {
   });
   nv.attachToCanvas(canvas);
 
-  // Multiclass BraTS colormap (0=transparent, 1=necrotic/core, 2=edema, 3=enhancing)
-  const cmap = {
-    R: [0, 255, 255, 255],
-    G: [0, 0, 255, 165],
-    B: [0, 0, 0, 0],
-    A: [0, 255, 255, 255],
-    I: [0, 1, 2, 3],
-  };
+  // BraTS label LUT matching the PNG preview:
+  // 0=background (transparent), 1=WT\TC (edema, green), 2=TC\ET (core, red), 3=ET (enhancing, yellow)
+  function makeBratsLut() {
+    const lut = new Uint8ClampedArray(256 * 4);
+    for (let i = 0; i < 256; i++) {
+      const idx = i * 4;
+      lut[idx + 3] = 0; // transparent by default
+    }
+    // label 1: green
+    lut[4] = 0; lut[5] = 204; lut[6] = 0; lut[7] = 255;
+    // label 2: red
+    lut[8] = 255; lut[9] = 0; lut[10] = 0; lut[11] = 255;
+    // label 3: yellow
+    lut[12] = 255; lut[13] = 255; lut[14] = 0; lut[15] = 255;
+    return { lut };
+  }
+  const bratsLut = makeBratsLut();
 
   const volumes = [];
   if (inputUrl) {
+    layerIdx.input = volumes.length;
     volumes.push({
       url: inputUrl,
       opacity: 1.0,
       colormap: "gray",
-      frame4D: 0, // if the scan is 4D (modalities/time), show the first 3D volume
     });
   }
   if (maskUrl) {
+    layerIdx.mask = volumes.length;
     volumes.push({
       url: maskUrl,
-      opacity: inputUrl ? 0.7 : 1.0,
-      colormapLabel: cmap,
+      opacity: 0.7,
+      colormapLabel: bratsLut,
       cal_min: 0,
       cal_max: 3,
-      frame4D: 0,
+    });
+  }
+  if (uncertaintyUrl) {
+    layerIdx.uncertainty = volumes.length;
+    volumes.push({
+      url: uncertaintyUrl,
+      opacity: 0.3,
+      colormap: "hot",
+      cal_min: 0,
     });
   }
 
   await nv.loadVolumes(volumes);
   nv.setSliceType(nv.sliceTypeAxial);
+
+  // Sync UI controls with the initial state
+  document.getElementById("toggle-mask").checked = layerIdx.mask >= 0;
+  document.getElementById("toggle-uncertainty").checked = layerIdx.uncertainty >= 0;
+  document.getElementById("opacity-mask").value = 70;
+  document.getElementById("opacity-mask-val").textContent = "70%";
+  document.getElementById("opacity-uncertainty").value = 30;
+  document.getElementById("opacity-uncertainty-val").textContent = "30%";
+}
+
+function toggleLayer(name, visible) {
+  if (!nv || layerIdx[name] < 0) return;
+  const opacity = visible ? parseInt(document.getElementById(`opacity-${name}`).value, 10) / 100 : 0;
+  nv.setOpacity(layerIdx[name], opacity);
+  nv.updateGLVolume();
+}
+
+function setLayerOpacity(name, value) {
+  if (!nv || layerIdx[name] < 0) return;
+  document.getElementById(`opacity-${name}-val`).textContent = `${value}%`;
+  const checkbox = document.getElementById(`toggle-${name}`);
+  if (!checkbox.checked) return;
+  nv.setOpacity(layerIdx[name], value / 100);
+  nv.updateGLVolume();
 }
 
 async function showResult(requestId) {
@@ -331,24 +401,6 @@ async function showResult(requestId) {
       data.case_id ? `Case: ${data.case_id}` : "";
 
     const baseUrl = API_BASE;
-
-    const setLink = (id, url, filename) => {
-      const el = document.getElementById(id);
-      if (url) {
-        el.href = baseUrl + url;
-        el.download = filename || url.split("/").pop();
-        el.classList.remove("hidden");
-      } else {
-        el.classList.add("hidden");
-      }
-    };
-
-    setLink("dl-mask", data.prediction_url, `segmentation_${requestId}_mask.nii.gz`);
-    setLink("dl-uncertainty", data.uncertainty_url, `segmentation_${requestId}_uncertainty.nii.gz`);
-    setLink("dl-report", data.report_url, `segmentation_${requestId}_report.json`);
-
-    document.getElementById("dl-rtstruct").href = `${baseUrl}/api/v1/segmentation/${requestId}/rtstruct`;
-    document.getElementById("dl-rtstruct").download = `segmentation_${requestId}_rtstruct.dcm`;
 
     const vizContainer = document.getElementById("viz-container");
     const vizImages = document.getElementById("viz-images");
@@ -368,12 +420,19 @@ async function showResult(requestId) {
       vizContainer.style.display = "none";
     }
 
-    await initViewer(data.input_url, data.prediction_url);
+    await initViewer(data.input_url, data.prediction_url, data.uncertainty_url);
 
     showScreen("screen-result");
   } catch (err) {
     document.getElementById("status-msg").textContent = "Failed to load result: " + err.message;
   }
+}
+
+function cancelProcess() {
+  if (pollTimer) clearTimeout(pollTimer);
+  currentRequestId = null;
+  toast("Processing cancelled");
+  showScreen("screen-upload");
 }
 
 function resetUI() {
