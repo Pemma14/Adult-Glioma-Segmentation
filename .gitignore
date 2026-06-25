@@ -172,5 +172,6 @@ checkpoints/*.pth
 logs/
 clearml.conf
 experiments/results/
+data/
 data/dicom_temp/
 nginx/ssl/*.pem
