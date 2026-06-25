@@ -17,7 +17,9 @@ from typing import Any
 
 import torch
 import uvicorn
-from fastapi import FastAPI, File, HTTPException, UploadFile
+import asyncio
+
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -97,8 +99,33 @@ def create_application() -> FastAPI:
     async def health_check() -> dict[str, str]:
         return {"status": "ok"}
 
+    def _run_inference(input_path: Path, request_dir: Path) -> None:
+        """Run inference synchronously in a background thread."""
+        _colab_state["message"] = "Running inference..."
+        try:
+            result = predict(
+                image_path=input_path,
+                output_dir=request_dir,
+                device=application.state.device,
+                config=application.state.config,
+                models=application.state.models,
+                save_uncertainty=True,
+                save_visualization=True,
+                n_slices=3,
+            )
+            _colab_state["result"] = result
+            _colab_state["status"] = "success"
+            _colab_state["message"] = "Segmentation completed successfully"
+            logger.info("Inference completed for colab request")
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Inference failed")
+            _colab_state["status"] = "fail"
+            _colab_state["message"] = str(exc)
+
     @application.post("/api/v1/segmentation/upload")
-    async def upload_scan(file: UploadFile = File(...)) -> dict[str, Any]:
+    async def upload_scan(
+        file: UploadFile = File(...), background_tasks: BackgroundTasks | None = None
+    ) -> dict[str, Any]:
         global _colab_state  # noqa: PLW0603
         _colab_state = {
             "status": "pending",
@@ -122,24 +149,11 @@ def create_application() -> FastAPI:
         _colab_state["input_url"] = f"/outputs/colab_request/{safe_name}"
 
         _colab_state["message"] = "Running inference..."
-        try:
-            result = predict(
-                image_path=input_path,
-                output_dir=request_dir,
-                device=application.state.device,
-                config=application.state.config,
-                models=application.state.models,
-                save_uncertainty=True,
-                save_visualization=True,
-                n_slices=3,
-            )
-            _colab_state["result"] = result
-            _colab_state["status"] = "success"
-            _colab_state["message"] = "Segmentation completed successfully"
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("Inference failed")
-            _colab_state["status"] = "fail"
-            _colab_state["message"] = str(exc)
+        if background_tasks is not None:
+            background_tasks.add_task(_run_inference, input_path, request_dir)
+        else:
+            # Fallback: run synchronously if background tasks are unavailable.
+            _run_inference(input_path, request_dir)
 
         return {
             "request_id": REQUEST_ID,
@@ -191,6 +205,7 @@ def create_application() -> FastAPI:
             case_id=result.get("case_id"),
             volumes_ml=volumes,
             prediction_url=_relative_url(result.get("prediction_path")),
+            rgb_mask_url=_relative_url(result.get("rgb_mask_path")),
             uncertainty_url=_relative_url(result.get("uncertainty_path")),
             report_url=_relative_url(report_path),
             input_url=_colab_state.get("input_url"),

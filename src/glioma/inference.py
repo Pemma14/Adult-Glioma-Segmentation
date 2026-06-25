@@ -219,7 +219,12 @@ def predict(
         original_data = original_img.get_fdata()
     original_3d = nib.Nifti1Image(original_data, original_img.affine)
 
-    from src.glioma.output import regions_to_multiclass_mask, save_prediction, save_uncertainty_map
+    from src.glioma.output import (
+        regions_to_multiclass_mask,
+        save_prediction,
+        save_rgb_mask,
+        save_uncertainty_map,
+    )
 
     # Convert region logits to a 3D multiclass mask in the model's 1mm RAS space
     # before resampling back to the original patient space.
@@ -230,6 +235,9 @@ def predict(
 
     result = save_prediction(
         prediction_original, case_id, image_path, output_dir, save_regions=False
+    )
+    result["rgb_mask_path"] = save_rgb_mask(
+        prediction_original, case_id, image_path, output_dir
     )
 
     if save_regions:

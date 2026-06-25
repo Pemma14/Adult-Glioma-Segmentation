@@ -85,6 +85,58 @@ def save_prediction(
     return result
 
 
+def save_rgb_mask(
+    prediction: np.ndarray,
+    case_id: str,
+    image_path: str | Path,
+    output_dir: Path,
+) -> str:
+    """Save the multi-class prediction as an RGB NIfTI for color viewer overlays.
+
+    Colors match the PNG preview:
+        0=background (transparent), 1=WT\\TC (edema, green),
+        2=TC\\ET (core, red), 3=ET (enhancing, yellow).
+
+    Args:
+        prediction: 3D multi-class mask or 4D region mask of shape (3, D, H, W).
+        case_id: Patient/case identifier used in the output filename.
+        image_path: Reference image used for the affine matrix.
+        output_dir: Directory where the RGB mask will be saved.
+
+    Returns:
+        Path to the saved RGB mask.
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    reference = nib.load(str(image_path))
+    affine = reference.affine
+
+    if prediction.ndim == 4:
+        multiclass_mask = regions_to_multiclass_mask(prediction)
+    else:
+        multiclass_mask = prediction.astype(np.uint8)
+
+    # Map BraTS labels to RGB colors (uint8, 0-255).
+    colors = {
+        0: (0, 0, 0),
+        1: (0, 204, 0),     # green: WT\TC
+        2: (255, 0, 0),     # red: TC\ET
+        3: (255, 255, 0),   # yellow: ET
+    }
+    rgb = np.zeros((*multiclass_mask.shape, 3), dtype=np.uint8)
+    for label, (r, g, b) in colors.items():
+        mask = multiclass_mask == label
+        rgb[mask, 0] = r
+        rgb[mask, 1] = g
+        rgb[mask, 2] = b
+
+    rgb_path = output_dir / f"{case_id}_pred_mask_rgb.nii.gz"
+    nib.save(nib.Nifti1Image(rgb, affine), str(rgb_path))
+    logger.info("Saved RGB mask to %s", rgb_path)
+    return str(rgb_path)
+
+
 def save_uncertainty_map(
     uncertainty: np.ndarray,
     case_id: str,

@@ -312,24 +312,6 @@ async function initViewer(inputUrl, maskUrl, uncertaintyUrl) {
   });
   nv.attachToCanvas(canvas);
 
-  // BraTS label LUT matching the PNG preview:
-  // 0=background (transparent), 1=WT\TC (edema, green), 2=TC\ET (core, red), 3=ET (enhancing, yellow)
-  function makeBratsLut() {
-    const lut = new Uint8ClampedArray(256 * 4);
-    for (let i = 0; i < 256; i++) {
-      const idx = i * 4;
-      lut[idx + 3] = 0; // transparent by default
-    }
-    // label 1: green
-    lut[4] = 0; lut[5] = 204; lut[6] = 0; lut[7] = 255;
-    // label 2: red
-    lut[8] = 255; lut[9] = 0; lut[10] = 0; lut[11] = 255;
-    // label 3: yellow
-    lut[12] = 255; lut[13] = 255; lut[14] = 0; lut[15] = 255;
-    return { lut };
-  }
-  const bratsLut = makeBratsLut();
-
   const volumes = [];
   if (inputUrl) {
     layerIdx.input = volumes.length;
@@ -344,9 +326,6 @@ async function initViewer(inputUrl, maskUrl, uncertaintyUrl) {
     volumes.push({
       url: maskUrl,
       opacity: 0.7,
-      colormapLabel: bratsLut,
-      cal_min: 0,
-      cal_max: 3,
     });
   }
   if (uncertaintyUrl) {
@@ -420,7 +399,7 @@ async function showResult(requestId) {
       vizContainer.style.display = "none";
     }
 
-    await initViewer(data.input_url, data.prediction_url, data.uncertainty_url);
+    await initViewer(data.input_url, data.rgb_mask_url, data.uncertainty_url);
 
     showScreen("screen-result");
   } catch (err) {

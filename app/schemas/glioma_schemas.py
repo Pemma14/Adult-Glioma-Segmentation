@@ -39,6 +39,7 @@ class SGliomaResultResponse(BaseModel):
     inference_mode: Optional[InferenceMode] = Field(None, description="Inference mode")
     volumes_ml: Optional[VolumesML] = Field(None, description="Computed region volumes")
     prediction_url: Optional[str] = Field(None, description="URL to download the segmentation mask")
+    rgb_mask_url: Optional[str] = Field(None, description="URL to the RGB colored segmentation mask for viewer overlay")
     uncertainty_url: Optional[str] = Field(None, description="URL to download the uncertainty map")
     report_url: Optional[str] = Field(None, description="URL to download the JSON report")
     input_url: Optional[str] = Field(None, description="URL to download the original input scan")
