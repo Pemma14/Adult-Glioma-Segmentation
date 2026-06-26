@@ -233,7 +233,7 @@ def predict(
     prediction_original = pred_in_original.get_fdata().astype(np.uint8)
 
     result = save_prediction(
-        prediction_original, case_id, image_path, output_dir, save_regions=True
+        prediction_original, case_id, image_path, output_dir, save_regions=False
     )
 
     if save_regions:

@@ -150,7 +150,6 @@ class GliomaRequestService:
             inference_mode=db_request.inference_mode,
             volumes_ml=volumes,
             prediction_url=self._file_url(db_request.prediction_path),
-            region_prediction_url=self._file_url(db_request.region_prediction_path),
             uncertainty_url=self._file_url(db_request.uncertainty_path),
             report_url=self._file_url(db_request.report_path),
             input_url=self._file_url(
