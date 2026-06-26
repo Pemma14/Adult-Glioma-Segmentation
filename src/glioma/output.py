@@ -116,9 +116,9 @@ def save_viewer_uncertainty_map(
 
     uncertainty = np.asarray(uncertainty, dtype=np.float32)
     foreground = prediction > 0
-    # Dilate the foreground mask by one voxel so uncertainty values at the
-    # boundary are preserved and the overlay does not show a sharp black rim.
-    dilated = ndimage.binary_dilation(foreground, iterations=1)
+    # Dilate the foreground mask so uncertainty values at the boundary are
+    # preserved and the overlay does not show a sharp black rim.
+    dilated = ndimage.binary_dilation(foreground, iterations=2)
     masked = uncertainty.copy()
     masked[~dilated] = 0.0
 
