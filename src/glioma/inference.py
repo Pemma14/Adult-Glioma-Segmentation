@@ -223,6 +223,7 @@ def predict(
         regions_to_multiclass_mask,
         save_prediction,
         save_uncertainty_map,
+        save_viewer_uncertainty_map,
     )
 
     # Convert region logits to a 3D multiclass mask in the model's 1mm RAS space
@@ -253,6 +254,11 @@ def predict(
             uncertainty_original, case_id, image_path, output_dir
         )
         result["uncertainty_path"] = uncertainty_path
+        viewer_uncertainty_path = save_viewer_uncertainty_map(
+            uncertainty_original, prediction_original, case_id, image_path, output_dir
+        )
+        result["viewer_uncertainty_path"] = viewer_uncertainty_path
+        logger.info("Saved viewer uncertainty path: %s", viewer_uncertainty_path)
 
     from src.glioma.report import compute_volumes
     volumes = compute_volumes(prediction_original, reference_nifti=str(image_path))

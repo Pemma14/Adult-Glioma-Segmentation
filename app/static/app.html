@@ -287,7 +287,7 @@ function setSliceType(type) {
   nv.setSliceType(map[type]);
 }
 
-async function initViewer(inputUrl, maskUrl, uncertaintyUrl) {
+async function initViewer(inputUrl, maskUrl, viewerUncertaintyUrl) {
   const canvas = document.getElementById("niivue-canvas");
   const container = document.getElementById("viewer-container");
   container.style.display = "block";
@@ -302,7 +302,8 @@ async function initViewer(inputUrl, maskUrl, uncertaintyUrl) {
     });
     nv.attachToCanvas(canvas);
     // Uncertainty: transparent below threshold, red-yellow at high values.
-    nv.addColormap("uncertainty", { R: [0, 0, 255, 255], G: [0, 0, 0, 255], B: [0, 0, 0, 0], A: [0, 0, 128, 255], I: [0, 0.75, 0.875, 1] });
+    // Niivue expects colormap indices (I) in the range [0, 255].
+    nv.addColormap("uncertainty", { R: [0, 0, 255, 255], G: [0, 0, 0, 255], B: [0, 0, 0, 0], A: [0, 0, 128, 255], I: [0, 51, 128, 255] });
   } else {
     // Remove previously loaded volumes before loading new ones.
     while (nv.volumes.length > 0) {
@@ -329,14 +330,16 @@ async function initViewer(inputUrl, maskUrl, uncertaintyUrl) {
       cal_max: 3,
     });
   }
-  if (uncertaintyUrl) {
+  if (viewerUncertaintyUrl) {
     layerIdx.uncertainty = volumes.length;
     volumes.push({
-      url: uncertaintyUrl,
+      url: viewerUncertaintyUrl,
       opacity: 0.0,
       colormap: "uncertainty",
       cal_min: 0,
+      cal_max: 1,
     });
+    console.log("Loading uncertainty volume:", viewerUncertaintyUrl, "at index", layerIdx.uncertainty);
   }
 
   await nv.loadVolumes(volumes);
@@ -347,8 +350,8 @@ async function initViewer(inputUrl, maskUrl, uncertaintyUrl) {
   document.getElementById("toggle-uncertainty").checked = false;
   document.getElementById("opacity-mask").value = 70;
   document.getElementById("opacity-mask-val").textContent = "70%";
-  document.getElementById("opacity-uncertainty").value = 20;
-  document.getElementById("opacity-uncertainty-val").textContent = "20%";
+  document.getElementById("opacity-uncertainty").value = 30;
+  document.getElementById("opacity-uncertainty-val").textContent = "30%";
 }
 
 function toggleLayer(name, visible) {
@@ -400,7 +403,8 @@ async function showResult(requestId) {
       vizContainer.style.display = "none";
     }
 
-    await initViewer(data.input_url, data.prediction_url, data.uncertainty_url);
+    console.log("viewer_uncertainty_url:", data.viewer_uncertainty_url);
+  await initViewer(data.input_url, data.prediction_url, data.viewer_uncertainty_url);
 
     showScreen("screen-result");
   } catch (err) {

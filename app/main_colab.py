@@ -203,6 +203,7 @@ def create_application() -> FastAPI:
             volumes_ml=volumes,
             prediction_url=_relative_url(result.get("prediction_path")),
             uncertainty_url=_relative_url(result.get("uncertainty_path")),
+            viewer_uncertainty_url=_relative_url(result.get("viewer_uncertainty_path")),
             report_url=_relative_url(report_path),
             input_url=_colab_state.get("input_url"),
             visualization_urls=visualization_urls,

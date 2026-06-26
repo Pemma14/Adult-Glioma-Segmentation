@@ -7,6 +7,7 @@ from pathlib import Path
 
 import nibabel as nib
 import numpy as np
+from scipy import ndimage
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +84,57 @@ def save_prediction(
 
     logger.info("Saved prediction to %s", mask_path)
     return result
+
+
+def save_viewer_uncertainty_map(
+    uncertainty: np.ndarray,
+    prediction: np.ndarray,
+    case_id: str,
+    image_path: str | Path,
+    output_dir: Path,
+) -> str:
+    """Save an uncertainty map masked to the segmentation region for viewer overlay.
+
+    Values outside the predicted tumor mask are set to zero so that the overlay
+    only highlights uncertain regions within the segmentation.
+
+    Args:
+        uncertainty: 3D uncertainty array of shape (D, H, W).
+        prediction: 3D multi-class mask of shape (D, H, W).
+        case_id: Patient/case identifier.
+        image_path: Reference image used for the affine matrix.
+        output_dir: Directory where the map will be saved.
+
+    Returns:
+        Path to the saved masked uncertainty map.
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    reference = nib.load(str(image_path))
+    affine = reference.affine
+
+    uncertainty = np.asarray(uncertainty, dtype=np.float32)
+    foreground = prediction > 0
+    # Dilate the foreground mask by one voxel so uncertainty values at the
+    # boundary are preserved and the overlay does not show a sharp black rim.
+    dilated = ndimage.binary_dilation(foreground, iterations=1)
+    masked = uncertainty.copy()
+    masked[~dilated] = 0.0
+
+    if masked.shape != reference.shape[:3]:
+        logger.warning(
+            "Uncertainty shape %s differs from reference image shape %s for %s. "
+            "Saved NIfTI will be in the model's processing space.",
+            masked.shape,
+            reference.shape[:3],
+            case_id,
+        )
+
+    uncertainty_path = output_dir / f"{case_id}_uncertainty_viewer.nii.gz"
+    nib.save(nib.Nifti1Image(masked, affine), str(uncertainty_path))
+    logger.info("Saved viewer uncertainty map to %s", uncertainty_path)
+    return str(uncertainty_path)
 
 
 def save_uncertainty_map(

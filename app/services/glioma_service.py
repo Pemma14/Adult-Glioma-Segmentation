@@ -151,6 +151,11 @@ class GliomaRequestService:
             volumes_ml=volumes,
             prediction_url=self._file_url(db_request.prediction_path),
             uncertainty_url=self._file_url(db_request.uncertainty_path),
+            viewer_uncertainty_url=self._file_url(
+                db_request.prediction.get("viewer_uncertainty_path")
+                if isinstance(db_request.prediction, dict)
+                else None
+            ),
             report_url=self._file_url(db_request.report_path),
             input_url=self._file_url(
                 str(Path(db_request.output_dir) / Path(db_request.input_file_path).name)

@@ -40,6 +40,7 @@ class SGliomaResultResponse(BaseModel):
     volumes_ml: Optional[VolumesML] = Field(None, description="Computed region volumes")
     prediction_url: Optional[str] = Field(None, description="URL to download the segmentation mask")
     uncertainty_url: Optional[str] = Field(None, description="URL to download the uncertainty map")
+    viewer_uncertainty_url: Optional[str] = Field(None, description="URL to the masked uncertainty map for viewer overlay")
     report_url: Optional[str] = Field(None, description="URL to download the JSON report")
     input_url: Optional[str] = Field(None, description="URL to download the original input scan")
     visualization_urls: Optional[List[str]] = Field(None, description="URLs of PNG visualizations")
