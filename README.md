@@ -1,102 +1,134 @@
 # Glioma Segmentation Service
 
-On-premise service for automated 3D segmentation of adult-type diffuse gliomas (WT/TC/ET) with TPS integration.
+Локальный (on-premise) сервис для автоматической 3D-сегментации диффузных глиом взрослых с интеграцией в TPS (Treatment Planning System).
 
-## Architecture
+Предназначен для врачей-радиационных онкологов, работающих в системах планирования лучевой терапии. Он автоматически выделяет три региона опухоли (Whole Tumour / Tumour Core / Enhancing Tumour — WT/TC/ET) на МРТ-снимках головного мозга, рассчитывает их объёмы и формирует структуры для импорта в TPS в формате RTSTRUCT. Поддерживается интеграция с Varian Eclipse через ESAPI-плагин, а также загрузка исследований в форматах NIfTI и DICOM.
+
+## Архитектура
 
 ```
-Eclipse (ESAPI plugin) ──REST──→ FastAPI ──RabbitMQ──→ Worker (SwinUNETR)
-                                     │                      │
-                                  PostgreSQL            models_registry/
+Eclipse (плагин ESAPI) ── REST ──→ FastAPI ── RabbitMQ ──→ Worker 
+                                     │                    │
+                                  PostgreSQL         Model registry
 ```
 
-## Structure
+## Структура проекта
 
-| Directory | Purpose |
+| Директория | Назначение |
 |---|---|
-| `app/` | FastAPI server, routes, services, ORM models, DICOM gateway |
-| `ml_worker/` | RabbitMQ inference worker |
-| `src/glioma/` | Production inference pipeline |
-| `src/models/` | Neural architectures (SwinUNETR, BaselineUNet, SwinDER3D) |
-| `models_registry/` | Versioned model checkpoints + config |
-| `plugin-eclipse/` | ESAPI C# plugin for Varian Eclipse |
-| `experiments/` | Research & training (separate workspace) |
-| `docs/` | Business analysis, product prototype |
+| `app/` | FastAPI-сервер, маршруты, сервисы, ORM-модели, DICOM-шлюз |
+| `ml_worker/` | Inference-worker на RabbitMQ |
+| `src/glioma/` | Продакшен-пайплайн инференса |
+| `src/models/` | Архитектура модели SwinUNETR |
+| `models_registry/` | Версионированные чекпоинты моделей + конфигурации |
+| `plugin-eclipse/` | C#-плагин ESAPI для Varian Eclipse |
+| `nginx/` | Конфигурация reverse proxy и SSL |
+| `tests/` | Тесты (smoke-тесты API и др.) |
+| `experiments/` | Исследования и обучение (отдельное рабочее пространство) |
+| `docs/` | Бизнес-анализ и прототип продукта |
+| `data/` | Рабочие данные сервиса: загрузки, результаты, временные DICOM-файлы (создаётся при работе, не версионируется) |
 
-## Quick start
+### Основные файлы в корне
+
+| Файл | Назначение |
+|---|---|
+| `docker-compose.yml` | Описание всего стека сервисов для Docker Compose |
+| `pyproject.toml` | Зависимости Python, метаданные и настройки инструментов |
+| `pytest.ini` | Конфигурация тестового фреймворка pytest |
+| `.env.example` | Пример переменных окружения |
+| `AI_RULES.md` | Правила и соглашения для AI-ассистентов |
+
+## Окружение и зависимости
+
+Проект использует [`uv`](https://docs.astral.sh/uv/) для управления виртуальным окружением и зависимостями.
 
 ```bash
-# 1. Configure
-cp .env.example .env
-# edit .env: set AUTH__API_KEY, GLIOMA__MODEL_VERSION
+# Создать виртуальное окружение и установить зависимости
+uv sync
 
-# 2. Run full stack
+# Активировать окружение (опционально)
+source .venv/bin/activate
+
+# Запускать команды можно и без ручной активации через uv run
+uv run python -m app.main
+```
+
+При запуске через `uv run` используется виртуальное окружение из директории `.venv/`, управляемое `uv`.
+
+## Быстрый старт
+
+```bash
+# 1. Настройка
+cp .env.example .env
+# отредактируй .env: установите AUTH__API_KEY, GLIOMA__MODEL_VERSION
+
+# 2. Запуск всего стека
 docker compose up --build
 ```
 
-Or without Docker:
+Или без Docker:
 
 ```bash
 uv sync
-# terminal 1
+# терминал 1
 uv run python -m app.main
-# terminal 2
+# терминал 2
 uv run python -m ml_worker.glioma_worker
 ```
 
 ## API
 
-All requests require `X-API-Key` header.
+Все запросы требуют заголовок `X-API-Key`.
 
 ```bash
-# Upload NIfTI
+# Загрузить NIfTI
 curl -X POST localhost:8500/api/v1/segmentation/upload \
   -H "X-API-Key: your-key" \
   -F "file=@scan.nii.gz"
 
-# Upload DICOM (zip)
+# Загрузить DICOM (zip)
 curl -X POST localhost:8500/api/v1/segmentation/from-dicom \
   -H "X-API-Key: your-key" \
   -F "file=@dicom.zip"
 
-# Poll status
+# Проверить статус
 curl localhost:8500/api/v1/segmentation/status/1 \
   -H "X-API-Key: your-key"
 
-# Get result with volumes + download URLs
+# Получить результат с объёмами и ссылками для скачивания
 curl localhost:8500/api/v1/segmentation/result/1 \
   -H "X-API-Key: your-key"
 
-# Download RTSTRUCT (for TPS import)
+# Скачать RTSTRUCT (для импорта в TPS)
 curl -o rtstruct.dcm localhost:8500/api/v1/segmentation/1/rtstruct \
   -H "X-API-Key: your-key"
 ```
 
-## Web UI
+## Веб-интерфейс
 
-- `/viewer/app.html` — upload file, track status, view volumes, download results
-- `/viewer/viewer.html` — interactive NIfTI/DICOM viewer with overlay
+- `/viewer/app.html` — загрузка файла, отслеживание статуса, просмотр объёмов, скачивание результатов (в проде будет автоматически экспортироваться в TPS)
+- `/viewer/viewer.html` — интерактивный просмотрщик NIfTI/DICOM с оверлеем
 
-## CLI inference (standalone, no server)
+## CLI-инференс (автономно, без сервера)
 
 ```bash
 uv run python -m src.glioma --image scan.nii.gz --output_dir ./results
 ```
 
-## Eclipse integration
+## Интеграция с Eclipse
 
-The `plugin-eclipse/` folder contains an ESAPI C# script that:
-- Exports DICOM series from the current plan
-- Sends to the segmentation API
-- Downloads RTSTRUCT and imports it into the structure set
+Директория `plugin-eclipse/` содержит C#-скрипт ESAPI, который:
+- экспортирует DICOM-серию из текущего плана,
+- отправляет её в API сегментации,
+- скачивает RTSTRUCT и импортирует его в набор структур.
 
-## Tests
+## Тесты
 
 ```bash
 uv run pytest tests/ -v
 ```
 
-## Model registry
+## Реестр моделей
 
 ```
 models_registry/v1.0.0/
