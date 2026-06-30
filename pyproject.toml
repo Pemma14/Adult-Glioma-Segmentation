@@ -26,6 +26,7 @@ dependencies = [
     "tvdcn",
     "tqdm>=4.66.0",
     "PyYAML>=6.0.1",
+    "pandas-stubs~=3.0.3",
 ]
 
 [tool.uv]
