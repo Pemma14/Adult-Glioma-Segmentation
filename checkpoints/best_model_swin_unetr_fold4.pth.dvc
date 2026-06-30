@@ -1,0 +1,5 @@
+outs:
+- md5: 4fb823245a944124ac592b9d42ed8841
+  size: 754091619
+  hash: md5
+  path: best_model_swin_unetr_fold4.pth

@@ -1,0 +1,20 @@
+model_name: "unet3d"
+
+# Параметры обучения
+batch_size: 4
+max_epochs: 300
+lr: 0.0001
+weight_decay: 0.00001
+transfer_learning: false
+patience: 10
+
+# Параметры пайплайна / инференса
+img_size: [128, 128, 128]
+num_samples: 2
+
+# Параметры архитектуры UNet
+channels: [32, 64, 128, 256, 320]
+strides: [2, 2, 2, 2]
+num_res_units: 0
+norm: "INSTANCE"
+deep_supervision: false
