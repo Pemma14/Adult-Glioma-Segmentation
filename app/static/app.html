@@ -138,7 +138,7 @@ body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg);
             <span>Show segmentation mask</span>
           </label>
           <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
-            <input type="checkbox" id="toggle-uncertainty" onchange="toggleLayer('uncertainty', this.checked)">
+            <input type="checkbox" id="toggle-uncertainty" checked onchange="toggleLayer('uncertainty', this.checked)">
             <span>Show uncertainty map</span>
           </label>
         </div>
@@ -146,13 +146,13 @@ body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg);
         <div style="margin-top: 10px; display: grid; gap: 6px;">
           <div style="display: flex; align-items: center; gap: 8px;">
             <span style="min-width: 80px;">Mask opacity</span>
-            <input type="range" id="opacity-mask" min="0" max="100" value="70" style="flex: 1;" oninput="setLayerOpacity('mask', this.value)">
-            <span id="opacity-mask-val" style="min-width: 32px; text-align: right;">70%</span>
+            <input type="range" id="opacity-mask" min="0" max="100" value="100" style="flex: 1;" oninput="setLayerOpacity('mask', this.value)">
+            <span id="opacity-mask-val" style="min-width: 32px; text-align: right;">100%</span>
           </div>
           <div style="display: flex; align-items: center; gap: 8px;">
             <span style="min-width: 80px;">Uncertainty</span>
-            <input type="range" id="opacity-uncertainty" min="0" max="100" value="30" style="flex: 1;" oninput="setLayerOpacity('uncertainty', this.value)">
-            <span id="opacity-uncertainty-val" style="min-width: 32px; text-align: right;">30%</span>
+            <input type="range" id="opacity-uncertainty" min="0" max="100" value="100" style="flex: 1;" oninput="setLayerOpacity('uncertainty', this.value)">
+            <span id="opacity-uncertainty-val" style="min-width: 32px; text-align: right;">100%</span>
           </div>
         </div>
       </div>
@@ -319,7 +319,7 @@ async function initViewer(inputUrl, maskUrl, viewerUncertaintyUrl) {
     layerIdx.mask = volumes.length;
     volumes.push({
       url: maskUrl,
-      opacity: 0.7,
+      opacity: 1.0,
       colormap: "warm",
       cal_min: 0,
       cal_max: 3,
@@ -329,7 +329,7 @@ async function initViewer(inputUrl, maskUrl, viewerUncertaintyUrl) {
     layerIdx.uncertainty = volumes.length;
     volumes.push({
       url: viewerUncertaintyUrl,
-      opacity: 0.0,
+      opacity: 1.0,
       colormap: "uncertainty",
       cal_min: 0,
       cal_max: 1,
@@ -342,11 +342,11 @@ async function initViewer(inputUrl, maskUrl, viewerUncertaintyUrl) {
 
   // Sync UI controls with the initial state
   document.getElementById("toggle-mask").checked = layerIdx.mask >= 0;
-  document.getElementById("toggle-uncertainty").checked = false;
-  document.getElementById("opacity-mask").value = 70;
-  document.getElementById("opacity-mask-val").textContent = "70%";
-  document.getElementById("opacity-uncertainty").value = 30;
-  document.getElementById("opacity-uncertainty-val").textContent = "30%";
+  document.getElementById("toggle-uncertainty").checked = layerIdx.uncertainty >= 0;
+  document.getElementById("opacity-mask").value = 100;
+  document.getElementById("opacity-mask-val").textContent = "100%";
+  document.getElementById("opacity-uncertainty").value = 100;
+  document.getElementById("opacity-uncertainty-val").textContent = "100%";
 }
 
 function toggleLayer(name, visible) {

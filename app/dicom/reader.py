@@ -4,7 +4,7 @@ import logging
 import shutil
 import zipfile
 from pathlib import Path
-from typing import List, Optional
+from typing import Optional
 
 import numpy as np
 
@@ -28,22 +28,6 @@ def _find_series_by_description(dicom_dir: Path, description_keyword: str) -> Op
         words = desc.replace(",", " ").replace("_", " ").replace("-", " ").split()
         if any(keyword_upper == w or keyword_upper == w.rstrip("CE") for w in words):
             return Path(file_names[0]).parent
-    return None
-
-
-def _find_series_by_modality(dicom_dir: Path, modality: str) -> Optional[List[Path]]:
-    import SimpleITK as sitk
-    series_reader = sitk.ImageSeriesReader()
-    series_ids = series_reader.GetGDCMSeriesIDs(str(dicom_dir))
-
-    for series_id in series_ids:
-        file_names = series_reader.GetGDCMSeriesFileNames(str(dicom_dir), series_id)
-        if not file_names:
-            continue
-        header = sitk.ReadImage(file_names[0])
-        mod = header.GetMetaData("0008|0060") if header.HasMetaDataKey("0008|0060") else ""
-        if mod.upper() == modality.upper():
-            return [Path(f) for f in file_names]
     return None
 
 
@@ -74,15 +58,10 @@ def extract_zip_and_find_modalities(zip_path: Path, temp_dir: Path) -> dict:
     modalities: dict[str, Path] = {}
     for mod in MODALITIES:
         series_dir = _find_series_by_description(extract_dir, mod)
-        if series_dir:
-            modalities[mod] = series_dir
-            logger.info("Found %s series in %s", mod, series_dir)
-
-    if not modalities:
-        series_ids = _find_series_by_modality(extract_dir, "MR")
-        if series_ids:
-            modalities["MR"] = extract_dir
-            logger.info("Found MR series (modality-based fallback)")
+        if not series_dir:
+            raise ValueError(f"Required modality '{mod}' not found in DICOM archive")
+        modalities[mod] = series_dir
+        logger.info("Found %s series in %s", mod, series_dir)
 
     return modalities
 
