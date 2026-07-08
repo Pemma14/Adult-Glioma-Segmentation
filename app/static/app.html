@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Glioma Segmentation — Clinical Interface</title>
+<script src="https://unpkg.com/@niivue/niivue@0.48.1/dist/niivue.umd.js" crossorigin="anonymous"></script>
+<style>
+:root { --bg: #0f0f1a; --card: #1a1a2e; --border: #2a2a3e; --accent: #e94560; --text: #e0e0e0; --muted: #666; --radius: 10px; }
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+.hidden { display: none !important; }
+.container { max-width: 800px; margin: 0 auto; padding: 24px; }
+
+/* Header */
+.header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; }
+.header h1 { font-size: 1.3rem; font-weight: 600; }
+
+/* Card */
+.card { background: var(--card); border-radius: var(--radius); border: 1px solid var(--border); padding: 32px; margin-bottom: 16px; }
+
+/* Upload zone */
+.drop-zone { border: 2px dashed var(--border); border-radius: var(--radius); padding: 60px 20px; text-align: center; cursor: pointer; transition: 0.2s; }
+.drop-zone:hover, .drop-zone.drag-over { border-color: var(--accent); background: rgba(233,69,96,0.05); }
+.drop-zone .icon { font-size: 3rem; margin-bottom: 12px; }
+.drop-zone .hint { font-size: 0.85rem; color: var(--muted); margin-top: 8px; }
+.drop-zone input { display: none; }
+
+/* Status */
+.status-icon { font-size: 3rem; text-align: center; margin-bottom: 16px; }
+.spinner { width: 40px; height: 40px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; margin: 0 auto 16px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Result volumes */
+.vol-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 24px; }
+.vol-card { background: var(--bg); border-radius: 8px; padding: 16px; text-align: center; border-top: 3px solid; }
+.vol-card .label { font-size: 0.7rem; text-transform: uppercase; color: var(--muted); letter-spacing: 0.5px; }
+.vol-card .value { font-size: 1.6rem; font-weight: 700; margin-top: 4px; }
+.vol-card .unit { font-size: 0.75rem; color: var(--muted); }
+
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 10px 16px; border-radius: 6px; border: none; cursor: pointer; font-size: 0.85rem; font-weight: 500; transition: 0.2s; text-decoration: none; }
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-primary:hover { background: #d63851; }
+.btn-secondary { background: var(--border); color: var(--text); }
+.btn-secondary:hover { background: #3a3a4e; }
+.btn-sm { padding: 6px 12px; font-size: 0.8rem; }
+
+/* Error */
+.error { color: var(--accent); text-align: center; padding: 12px; }
+.success { color: #4ade80; text-align: center; padding: 12px; }
+
+/* Request info */
+.info-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 0.85rem; }
+.info-row:last-child { border-bottom: none; }
+.info-row .label { color: var(--muted); }
+
+/* Toast */
+.toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 12px 24px; font-size: 0.85rem; opacity: 0; transition: 0.3s; pointer-events: none; }
+.toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1>Glioma Segmentation</h1>
+
+  </div>
+
+  <!-- Screen 1: Upload -->
+  <div id="screen-upload" class="card">
+    <div class="drop-zone" id="dropZone">
+      <div class="icon">📤</div>
+      <div><strong>Drop a NIfTI or DICOM file here</strong></div>
+      <div class="hint">or click to select · .nii, .nii.gz, .dcm (zip for DICOM series)</div>
+      <input type="file" id="fileInput" accept=".nii,.nii.gz,.dcm,.zip">
+    </div>
+    <div style="margin-top: 12px; text-align: center;">
+      <button class="btn btn-secondary btn-sm" onclick="document.getElementById('fileInput').click()">Choose File</button>
+    </div>
+  </div>
+
+  <!-- Screen 2: Status -->
+  <div id="screen-status" class="card hidden">
+    <div class="spinner"></div>
+    <div class="status-icon">⏳</div>
+    <div style="text-align: center; margin-bottom: 16px;">
+      <div style="font-size: 1.1rem; font-weight: 600; margin-bottom: 4px;">Processing...</div>
+      <div id="status-msg" style="color: var(--muted); font-size: 0.85rem;">Segmentation in progress</div>
+    </div>
+    <div class="info-row"><span class="label">Request ID</span><span id="status-id">—</span></div>
+    <div class="info-row"><span class="label">Status</span><span id="status-state">pending</span></div>
+    <div style="margin-top: 16px; text-align: center;">
+      <button class="btn btn-secondary btn-sm" onclick="cancelProcess()">Cancel</button>
+    </div>
+  </div>
+
+  <!-- Screen 3: Result -->
+  <div id="screen-result" class="card hidden">
+    <div class="status-icon">✅</div>
+    <div style="text-align: center; margin-bottom: 20px;">
+      <div style="font-size: 1.1rem; font-weight: 600;">Segmentation Complete</div>
+      <div id="result-case-id" style="color: var(--muted); font-size: 0.85rem;"></div>
+    </div>
+
+    <div class="vol-grid">
+      <div class="vol-card" style="border-color:#e94560;">
+        <div class="label">Whole Tumor</div>
+        <div class="value" id="vol-wt">—</div>
+        <div class="unit">mL</div>
+      </div>
+      <div class="vol-card" style="border-color:#0f3460;">
+        <div class="label">Tumor Core</div>
+        <div class="value" id="vol-tc">—</div>
+        <div class="unit">mL</div>
+      </div>
+      <div class="vol-card" style="border-color:#533483;">
+        <div class="label">Enhancing Tumor</div>
+        <div class="value" id="vol-et">—</div>
+        <div class="unit">mL</div>
+      </div>
+    </div>
+
+    <div id="viewer-container" style="margin-top: 16px; display: none;">
+      <div style="margin-bottom: 8px; font-size: 0.85rem; color: var(--muted);">Interactive 3D View:</div>
+      <canvas id="niivue-canvas" style="width: 100%; height: 480px; border-radius: 8px; border: 1px solid var(--border); background: #000;"></canvas>
+      <div style="display: flex; gap: 8px; justify-content: center; margin-top: 8px; flex-wrap: wrap;">
+        <button class="btn btn-secondary btn-sm" onclick="setSliceType('axial')">Axial</button>
+        <button class="btn btn-secondary btn-sm" onclick="setSliceType('coronal')">Coronal</button>
+        <button class="btn btn-secondary btn-sm" onclick="setSliceType('sagittal')">Sagittal</button>
+        <button class="btn btn-secondary btn-sm" onclick="setSliceType('multi')">Multi-planar</button>
+        <button class="btn btn-secondary btn-sm" onclick="setSliceType('render')">3D Render</button>
+      </div>
+
+      <div style="margin-top: 12px; padding: 12px; background: var(--bg); border-radius: 8px; border: 1px solid var(--border); font-size: 0.8rem;">
+        <div style="display: grid; gap: 8px;">
+          <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+            <input type="checkbox" id="toggle-mask" checked onchange="toggleLayer('mask', this.checked)">
+            <span>Show segmentation mask</span>
+          </label>
+          <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+            <input type="checkbox" id="toggle-uncertainty" checked onchange="toggleLayer('uncertainty', this.checked)">
+            <span>Show uncertainty map</span>
+          </label>
+        </div>
+
+        <div style="margin-top: 10px; display: grid; gap: 6px;">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="min-width: 80px;">Mask opacity</span>
+            <input type="range" id="opacity-mask" min="0" max="100" value="100" style="flex: 1;" oninput="setLayerOpacity('mask', this.value)">
+            <span id="opacity-mask-val" style="min-width: 32px; text-align: right;">100%</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="min-width: 80px;">Uncertainty</span>
+            <input type="range" id="opacity-uncertainty" min="0" max="100" value="100" style="flex: 1;" oninput="setLayerOpacity('uncertainty', this.value)">
+            <span id="opacity-uncertainty-val" style="min-width: 32px; text-align: right;">100%</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div style="margin-top: 16px; text-align: center;">
+      <button class="btn btn-secondary btn-sm" onclick="resetUI()">New Segmentation</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<script>
+const API_BASE = window.location.origin;
+let currentRequestId = null;
+let pollTimer = null;
+let nv = null;
+let layerIdx = { input: -1, mask: -1, uncertainty: -1 };
+
+const API_KEY = localStorage.getItem("glioma_api_key") || prompt("Enter your API key:");
+if (API_KEY) {
+  localStorage.setItem("glioma_api_key", API_KEY);
+}
+
+function headers() {
+  return { "X-API-Key": API_KEY || "", "Accept": "application/json" };
+}
+
+function showScreen(id) {
+  ["screen-upload", "screen-status", "screen-result"].forEach(s => {
+    document.getElementById(s).classList.toggle("hidden", s !== id);
+  });
+}
+
+function toast(msg, duration = 3000) {
+  const el = document.getElementById("toast");
+  el.textContent = msg;
+  el.classList.add("show");
+  setTimeout(() => el.classList.remove("show"), duration);
+}
+
+async function apiPost(url, body) {
+  const resp = await fetch(url, { method: "POST", headers: headers(), body });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+    throw new Error(err.detail || `HTTP ${resp.status}`);
+  }
+  return resp.json();
+}
+
+async function apiGet(url) {
+  const resp = await fetch(url, { headers: headers() });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+    throw new Error(err.detail || `HTTP ${resp.status}`);
+  }
+  return resp.json();
+}
+
+// --- Upload ---
+async function uploadFile(file) {
+  const form = new FormData();
+  const isZip = file.name.endsWith(".zip");
+  const endpoint = isZip ? "/api/v1/segmentation/from-dicom" : "/api/v1/segmentation/upload";
+  form.append("file", file);
+  return apiPost(endpoint, form);
+}
+
+function handleFiles(files) {
+  if (!files.length) return;
+  const file = files[0];
+  showScreen("screen-status");
+  document.getElementById("status-state").textContent = "uploading";
+
+  uploadFile(file)
+    .then(data => {
+      console.log("Upload response:", data);
+      currentRequestId = data.request_id ?? 1;
+      document.getElementById("status-id").textContent = currentRequestId;
+      document.getElementById("status-state").textContent = data.status;
+      document.getElementById("status-msg").textContent = data.message || "Queued for inference";
+      pollStatus(currentRequestId);
+    })
+    .catch(err => {
+      document.getElementById("status-msg").textContent = err.message;
+      document.getElementById("status-state").textContent = "error";
+      document.querySelector("#screen-status .spinner").remove();
+      document.querySelector("#screen-status .status-icon").textContent = "❌";
+      setTimeout(() => showScreen("screen-upload"), 3000);
+    });
+}
+
+async function pollStatus(requestId) {
+  if (pollTimer) clearTimeout(pollTimer);
+  try {
+    const data = await apiGet(`/api/v1/segmentation/status/${requestId}`);
+    document.getElementById("status-state").textContent = data.status;
+    if (data.message) document.getElementById("status-msg").textContent = data.message;
+
+    if (data.status === "success") {
+      showResult(requestId);
+      return;
+    }
+    if (data.status === "fail") {
+      document.querySelector("#screen-status .spinner").remove();
+      document.querySelector("#screen-status .status-icon").textContent = "❌";
+      document.getElementById("status-msg").textContent = data.message || "Segmentation failed";
+      return;
+    }
+    pollTimer = setTimeout(() => pollStatus(requestId), 2000);
+  } catch (err) {
+    document.getElementById("status-msg").textContent = err.message;
+    pollTimer = setTimeout(() => pollStatus(requestId), 3000);
+  }
+}
+
+function setSliceType(type) {
+  if (!nv) return;
+  const map = {
+    axial: nv.sliceTypeAxial,
+    coronal: nv.sliceTypeCoronal,
+    sagittal: nv.sliceTypeSagittal,
+    multi: nv.sliceTypeMultiplanar,
+    render: nv.sliceTypeRender,
+  };
+  nv.setSliceType(map[type]);
+}
+
+async function initViewer(inputUrl, maskUrl, viewerUncertaintyUrl) {
+  const canvas = document.getElementById("niivue-canvas");
+  const container = document.getElementById("viewer-container");
+  container.style.display = "block";
+
+  layerIdx = { input: -1, mask: -1, uncertainty: -1 };
+
+  if (!nv) {
+    nv = new niivue.Niivue({
+      show3Dcrosshair: true,
+      backColor: [0, 0, 0, 1],
+      crosshairColor: [1, 1, 1, 1],
+    });
+    nv.attachToCanvas(canvas);
+    // Uncertainty: transparent below threshold, red-yellow at high values.
+    // Niivue expects colormap indices (I) in the range [0, 255].
+    nv.addColormap("uncertainty", { R: [0, 0, 255, 255], G: [0, 0, 0, 255], B: [0, 0, 0, 0], A: [0, 0, 128, 255], I: [0, 51, 128, 255] });
+  } else {
+    // Remove previously loaded volumes before loading new ones.
+    while (nv.volumes.length > 0) {
+      nv.removeVolume(nv.volumes[0]);
+    }
+  }
+
+  const volumes = [];
+  if (inputUrl) {
+    layerIdx.input = volumes.length;
+    volumes.push({
+      url: inputUrl,
+      opacity: 1.0,
+      colormap: "gray",
+    });
+  }
+  if (maskUrl) {
+    layerIdx.mask = volumes.length;
+    volumes.push({
+      url: maskUrl,
+      opacity: 1.0,
+      colormap: "warm",
+      cal_min: 0,
+      cal_max: 3,
+    });
+  }
+  if (viewerUncertaintyUrl) {
+    layerIdx.uncertainty = volumes.length;
+    volumes.push({
+      url: viewerUncertaintyUrl,
+      opacity: 1.0,
+      colormap: "uncertainty",
+      cal_min: 0,
+      cal_max: 1,
+    });
+    console.log("Loading uncertainty volume:", viewerUncertaintyUrl, "at index", layerIdx.uncertainty);
+  }
+
+  await nv.loadVolumes(volumes);
+  nv.setSliceType(nv.sliceTypeAxial);
+
+  // Sync UI controls with the initial state
+  document.getElementById("toggle-mask").checked = layerIdx.mask >= 0;
+  document.getElementById("toggle-uncertainty").checked = layerIdx.uncertainty >= 0;
+  document.getElementById("opacity-mask").value = 100;
+  document.getElementById("opacity-mask-val").textContent = "100%";
+  document.getElementById("opacity-uncertainty").value = 100;
+  document.getElementById("opacity-uncertainty-val").textContent = "100%";
+}
+
+function toggleLayer(name, visible) {
+  if (!nv || layerIdx[name] < 0) return;
+  const opacity = visible ? parseInt(document.getElementById(`opacity-${name}`).value, 10) / 100 : 0;
+  nv.setOpacity(layerIdx[name], opacity);
+  nv.updateGLVolume();
+}
+
+function setLayerOpacity(name, value) {
+  if (!nv || layerIdx[name] < 0) return;
+  document.getElementById(`opacity-${name}-val`).textContent = `${value}%`;
+  const checkbox = document.getElementById(`toggle-${name}`);
+  if (!checkbox.checked) return;
+  nv.setOpacity(layerIdx[name], value / 100);
+  nv.updateGLVolume();
+}
+
+async function showResult(requestId) {
+  try {
+    const data = await apiGet(`/api/v1/segmentation/result/${requestId}`);
+
+    if (data.volumes_ml) {
+      document.getElementById("vol-wt").textContent = data.volumes_ml.wt?.toFixed(3) || "—";
+      document.getElementById("vol-tc").textContent = data.volumes_ml.tc?.toFixed(3) || "—";
+      document.getElementById("vol-et").textContent = data.volumes_ml.et?.toFixed(3) || "—";
+    }
+
+    document.getElementById("result-case-id").textContent =
+      data.case_id ? `Case: ${data.case_id}` : "";
+
+    await initViewer(data.input_url, data.prediction_url, data.viewer_uncertainty_url);
+
+    showScreen("screen-result");
+  } catch (err) {
+    document.getElementById("status-msg").textContent = "Failed to load result: " + err.message;
+  }
+}
+
+function cancelProcess() {
+  if (pollTimer) clearTimeout(pollTimer);
+  currentRequestId = null;
+  toast("Processing cancelled");
+  showScreen("screen-upload");
+}
+
+function resetUI() {
+  if (pollTimer) clearTimeout(pollTimer);
+  currentRequestId = null;
+  showScreen("screen-upload");
+}
+
+// --- Drag and drop ---
+const dropZone = document.getElementById("dropZone");
+const fileInput = document.getElementById("fileInput");
+
+dropZone.addEventListener("dragover", (e) => { e.preventDefault(); dropZone.classList.add("drag-over"); });
+dropZone.addEventListener("dragleave", () => dropZone.classList.remove("drag-over"));
+dropZone.addEventListener("drop", (e) => { e.preventDefault(); dropZone.classList.remove("drag-over"); handleFiles(e.dataTransfer.files); });
+dropZone.addEventListener("click", () => fileInput.click());
+fileInput.addEventListener("change", () => { handleFiles(fileInput.files); fileInput.value = ""; });
+
+</script>
+</body>
+</html>

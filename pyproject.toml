@@ -1,0 +1,50 @@
+[project]
+name = "glioma-onprem"
+version = "1.0.0"
+description = "On-premise service for automated 3D segmentation of adult-type diffuse gliomas"
+requires-python = ">=3.12, <3.13"
+dependencies = [
+    "torch>=2.2.0; sys_platform == 'darwin'",
+    "torch>=2.4.0; sys_platform == 'linux'",
+    "torchvision>=0.17.0; sys_platform == 'darwin'",
+    "torchvision>=0.19.0; sys_platform == 'linux'",
+    "monai>=1.4.0",
+    "nibabel>=5.0.0",
+    "numpy>=1.24.0,<2",
+    "pandas>=1.5.0",
+    "matplotlib>=3.4.0",
+    "einops>=0.7.0",
+    "simpleitk>=2.3.0",
+    "PyYAML>=6.0.1",
+    "fastapi>=0.110.0",
+    "uvicorn>=0.29.0",
+    "sqlalchemy>=2.0.45",
+    "pydantic-settings>=2.12.0",
+    "pydantic[email]>=2.12.0",
+    "python-dotenv>=1.2.1",
+    "psycopg[binary]>=3.2.4",
+    "httpx>=0.27.0",
+    "tenacity>=8.2.3",
+    "aio-pika>=9.4.0",
+    "python-multipart>=0.0.9",
+    "aiofiles>=23.0.0",
+    "pydicom>=2.4.0",
+    "scikit-image>=0.22.0",
+    "pandas-stubs~=3.0.3",
+]
+
+[project.optional-dependencies]
+gpu = ["tvdcn"]
+test = ["pytest>=8.0.0", "pytest-asyncio>=0.23.0"]
+
+[tool.uv]
+environments = [
+    "sys_platform == 'darwin' and platform_machine == 'x86_64'",
+]
+
+[tool.uv.sources]
+tvdcn = { git = "https://github.com/inspiros/tvdcn.git", rev = "v0.4.0" }
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*", "app*", "ml_worker*"]

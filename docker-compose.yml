@@ -1,0 +1,104 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: app/Dockerfile
+    image: glioma-service:0.1.0
+    container_name: glioma-service-api
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./app:/app/app
+      - ./src:/app/src
+      - ./ml_worker:/app/ml_worker
+      - ./models_registry:/app/models_registry
+      - ./data/uploads:/app/data/uploads
+      - ./data/outputs:/app/data/outputs
+    ports:
+      - "8500:8500"
+    depends_on:
+      database:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - glioma-network
+
+  database:
+    image: postgres:16-alpine
+    container_name: glioma-service-db
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - postgres_data:/var/lib/postgresql/data/
+    env_file:
+      - .env
+    networks:
+      - glioma-network
+
+  web-proxy:
+    image: nginx:1.27-alpine
+    container_name: glioma-service-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      app:
+        condition: service_started
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf
+      - ./nginx/ssl:/etc/nginx/ssl
+    networks:
+      - glioma-network
+
+  rabbitmq:
+    image: rabbitmq:3.13.1-management
+    hostname: rabbitmq
+    restart: unless-stopped
+    env_file:
+      - .env
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_running"]
+      interval: 20s
+      timeout: 10s
+      retries: 3
+    volumes:
+      - rabbitmq:/var/lib/rabbitmq
+    networks:
+      - glioma-network
+
+  glioma-worker:
+    image: glioma-service:0.1.0
+    restart: unless-stopped
+    command: ["python", "-m", "ml_worker.glioma_worker"]
+    env_file:
+      - .env
+    volumes:
+      - ./app:/app/app
+      - ./src:/app/src
+      - ./ml_worker:/app/ml_worker
+      - ./models_registry:/app/models_registry
+      - ./data/uploads:/app/data/uploads
+      - ./data/outputs:/app/data/outputs
+    deploy:
+      replicas: 1
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - glioma-network
+
+volumes:
+  postgres_data:
+  rabbitmq:
+
+networks:
+  glioma-network:
+    name: glioma-network
+    driver: bridge
